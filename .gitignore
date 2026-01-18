@@ -31,6 +31,7 @@ yarn-error.*
 *.pem
 
 # local env files
+.env
 .env*.local
 
 # typescript
@@ -39,3 +40,14 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# bun
+bun.lockb
+
+# naughty/explicit video content (not for public repo)
+src/assets/luna-naughty*.mp4
+src/assets/luna-naighty*.mp4
+
+# launcher icons (generated)
+ic_launcher/
+ic_launcher_round/
