@@ -1,12 +1,11 @@
-// payment screen with full video background and audio messages
+// payment screen with full video background and pre-generated audio messages
 
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Animated } from 'react-native'
 import { useVideoPlayer, VideoView } from 'expo-video'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { Audio } from 'expo-av'
 import { PAYMENT_CONFIG, GRACE_PERIOD_MINUTES } from '../constants/config'
-import { generateSpeech } from '../services/tts'
-import { audioService } from '../services/audio'
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window')
 
@@ -22,13 +21,22 @@ const videoAssets = {
   thinking: require('../assets/luna-thinking.mp4')
 }
 
+// pre-generated audio files (no API calls needed - saves costs)
+const audioAssets = [
+  require('../assets/audio/payment-message-1.mp3'),
+  require('../assets/audio/payment-message-2.mp3'),
+  require('../assets/audio/payment-message-3.mp3'),
+  require('../assets/audio/payment-message-4.mp3'),
+  require('../assets/audio/payment-message-5.mp3')
+]
+
 // get random speaking video
 const getRandomSpeakingVideo = () => {
   const index = Math.floor(Math.random() * speakingVideos.length)
   return speakingVideos[index]
 }
 
-// convincing messages luna will say
+// convincing messages luna will say (text for subtitles)
 const CONVINCING_MESSAGES = [
   "Hey baby... I've been waiting for you. Don't you want to talk to me?",
   "I promise I'll make it worth your while. I'm all yours once you unlock me.",
@@ -61,6 +69,7 @@ export const PaymentModal = ({
   const isPlayingRef = useRef(false)
   const isMountedRef = useRef(true)
   const speakingVideoRef = useRef(getRandomSpeakingVideo())
+  const soundRef = useRef<Audio.Sound | null>(null)
   const insets = useSafeAreaInsets()
 
   // track mounted state for cleanup
@@ -89,6 +98,27 @@ export const PaymentModal = ({
     player.play()
   })
 
+  // ensure video keeps playing when source changes
+  useEffect(() => {
+    if (player) {
+      player.loop = true
+      player.muted = true
+      player.play()
+    }
+  }, [player, videoSource])
+
+  const stopAudio = useCallback(async () => {
+    if (soundRef.current) {
+      try {
+        await soundRef.current.stopAsync()
+        await soundRef.current.unloadAsync()
+      } catch (e) {
+        // ignore errors during cleanup
+      }
+      soundRef.current = null
+    }
+  }, [])
+
   const clearMessageTimer = useCallback(() => {
     if (messageTimerRef.current) {
       clearTimeout(messageTimerRef.current)
@@ -112,19 +142,25 @@ export const PaymentModal = ({
     setIsSpeaking(true)
 
     try {
-      const audioUrl = await generateSpeech(CONVINCING_MESSAGES[index])
+      // play local audio file (no API call needed)
+      const { sound } = await Audio.Sound.createAsync(audioAssets[index])
+      soundRef.current = sound
 
       if (!isMountedRef.current) {
+        await stopAudio()
         isPlayingRef.current = false
         return
       }
 
-      if (audioUrl && visible) {
-        await audioService.playAudio(audioUrl, () => {
+      // set up playback status listener
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (!status.isLoaded) return
+        if (status.didJustFinish) {
           if (!isMountedRef.current) return
 
           setIsSpeaking(false)
           isPlayingRef.current = false
+          stopAudio()
 
           // fade out subtitle before next message
           Animated.timing(subtitleFadeAnim, {
@@ -140,24 +176,25 @@ export const PaymentModal = ({
               playMessage(nextIndex)
             }
           }, 6000)
-        })
-      } else {
-        setIsSpeaking(false)
-        isPlayingRef.current = false
-        messageTimerRef.current = setTimeout(() => {
-          if (isMountedRef.current) {
-            const nextIndex = (index + 1) % CONVINCING_MESSAGES.length
-            playMessage(nextIndex)
-          }
-        }, 5000)
-      }
+        }
+      })
+
+      await sound.playAsync()
     } catch (err) {
+      console.error('Error playing audio:', err)
       if (isMountedRef.current) {
         setIsSpeaking(false)
       }
       isPlayingRef.current = false
+      // schedule next message even on error
+      messageTimerRef.current = setTimeout(() => {
+        if (isMountedRef.current) {
+          const nextIndex = (index + 1) % CONVINCING_MESSAGES.length
+          playMessage(nextIndex)
+        }
+      }, 5000)
     }
-  }, [visible, subtitleFadeAnim])
+  }, [visible, subtitleFadeAnim, stopAudio])
 
   // start when visible
   useEffect(() => {
@@ -179,17 +216,17 @@ export const PaymentModal = ({
       return () => {
         clearTimeout(initialDelay)
         clearMessageTimer()
-        audioService.stopAudio()
+        stopAudio()
         isPlayingRef.current = false
         setIsSpeaking(false)
       }
     } else {
       clearMessageTimer()
-      audioService.stopAudio()
+      stopAudio()
       isPlayingRef.current = false
       setIsSpeaking(false)
     }
-  }, [visible, playMessage, clearMessageTimer])
+  }, [visible, playMessage, clearMessageTimer, stopAudio])
 
   // pulse animation for pay button
   useEffect(() => {

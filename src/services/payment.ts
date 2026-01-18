@@ -13,8 +13,11 @@ import {
   transact,
   Web3MobileWallet
 } from '@solana-mobile/mobile-wallet-adapter-protocol-web3js'
+import AsyncStorage from '@react-native-async-storage/async-storage'
 import { PAYMENT_CONFIG, SOLANA_RPC_URL, SOLANA_CLUSTER, GRACE_PERIOD_MINUTES } from '../constants/config'
 import { SessionState } from '../types'
+
+const SESSION_STORAGE_KEY = 'luna_session'
 
 // decode base64 address to PublicKey (phantom returns base64 encoded addresses)
 const decodeAddress = (address: string): PublicKey => {
@@ -34,12 +37,14 @@ const APP_IDENTITY = {
   icon: 'favicon.ico'
 }
 
-// session state stored in memory - in production use async storage
+// session state - will be loaded from storage on init
 let currentSession: SessionState = {
   isActive: false,
   expiresAt: null,
   transactionSignature: null
 }
+
+let isSessionLoaded = false
 
 export const getConnection = (): Connection => {
   return new Connection(SOLANA_RPC_URL, 'confirmed')
@@ -193,7 +198,7 @@ export const initiatePayment = async (): Promise<{ success: boolean; signature?:
     }
 
     console.log('Transaction confirmed successfully!')
-    startSession(signature)
+    await startSession(signature)
 
     return { success: true, signature }
   } catch (error: unknown) {
@@ -214,7 +219,7 @@ export const initiatePayment = async (): Promise<{ success: boolean; signature?:
 
     // grant grace period on failure
     console.log('Granting grace period due to failure')
-    grantGracePeriod()
+    await grantGracePeriod()
 
     const errorMessage = error instanceof Error ? error.message : 'Payment failed'
     console.log('Returning error message:', errorMessage)
@@ -226,7 +231,41 @@ export const initiatePayment = async (): Promise<{ success: boolean; signature?:
   }
 }
 
-export const startSession = (signature: string): void => {
+// save session to async storage
+const saveSessionToStorage = async (session: SessionState): Promise<void> => {
+  try {
+    await AsyncStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session))
+  } catch (error) {
+    console.error('Failed to save session to storage:', error)
+  }
+}
+
+// load session from async storage
+export const loadSessionFromStorage = async (): Promise<void> => {
+  if (isSessionLoaded) return
+
+  try {
+    const stored = await AsyncStorage.getItem(SESSION_STORAGE_KEY)
+    if (stored) {
+      const session = JSON.parse(stored) as SessionState
+      // check if session is still valid
+      if (session.isActive && session.expiresAt && Date.now() < session.expiresAt) {
+        currentSession = session
+        console.log('Session restored from storage, expires at:', new Date(session.expiresAt))
+      } else {
+        // clear expired session
+        await AsyncStorage.removeItem(SESSION_STORAGE_KEY)
+        console.log('Stored session expired, cleared')
+      }
+    }
+  } catch (error) {
+    console.error('Failed to load session from storage:', error)
+  }
+
+  isSessionLoaded = true
+}
+
+export const startSession = async (signature: string): Promise<void> => {
   const now = Date.now()
   const durationMs = PAYMENT_CONFIG.sessionDurationMinutes * 60 * 1000
 
@@ -235,9 +274,11 @@ export const startSession = (signature: string): void => {
     expiresAt: now + durationMs,
     transactionSignature: signature
   }
+
+  await saveSessionToStorage(currentSession)
 }
 
-export const grantGracePeriod = (): void => {
+export const grantGracePeriod = async (): Promise<void> => {
   const now = Date.now()
   const graceDurationMs = GRACE_PERIOD_MINUTES * 60 * 1000
 
@@ -246,6 +287,8 @@ export const grantGracePeriod = (): void => {
     expiresAt: now + graceDurationMs,
     transactionSignature: null
   }
+
+  await saveSessionToStorage(currentSession)
 }
 
 export const getSessionState = (): SessionState => {
@@ -257,6 +300,8 @@ export const getSessionState = (): SessionState => {
         expiresAt: null,
         transactionSignature: null
       }
+      // clear storage async (don't await)
+      AsyncStorage.removeItem(SESSION_STORAGE_KEY).catch(() => {})
     }
   }
   return { ...currentSession }
@@ -279,10 +324,16 @@ export const formatTimeRemaining = (): string => {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`
 }
 
-export const endSession = (): void => {
+export const endSession = async (): Promise<void> => {
   currentSession = {
     isActive: false,
     expiresAt: null,
     transactionSignature: null
+  }
+
+  try {
+    await AsyncStorage.removeItem(SESSION_STORAGE_KEY)
+  } catch (error) {
+    console.error('Failed to clear session from storage:', error)
   }
 }

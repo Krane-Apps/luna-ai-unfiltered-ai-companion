@@ -20,7 +20,7 @@ import { SessionTimer } from '../components/SessionTimer'
 import { generateChatResponse, clearChatHistory } from '../services/chat'
 import { generateSpeech } from '../services/tts'
 import { audioService } from '../services/audio'
-import { initiatePayment, getSessionState, endSession } from '../services/payment'
+import { initiatePayment, getSessionState, endSession, loadSessionFromStorage } from '../services/payment'
 import { WELCOME_MESSAGE } from '../constants/prompts'
 import { AvatarState } from '../types'
 
@@ -74,6 +74,15 @@ export const ChatScreen = () => {
     player.play()
   })
 
+  // ensure video keeps playing when source changes
+  useEffect(() => {
+    if (player) {
+      player.loop = true
+      player.muted = true
+      player.play()
+    }
+  }, [player, videoSource])
+
   // track mounted state for cleanup
   useEffect(() => {
     isMountedRef.current = true
@@ -83,8 +92,12 @@ export const ChatScreen = () => {
   }, [])
 
   useEffect(() => {
-    audioService.initialize()
-    checkSession()
+    const init = async () => {
+      audioService.initialize()
+      await loadSessionFromStorage()
+      checkSession()
+    }
+    init()
   }, [])
 
   // handle avatar state
@@ -312,19 +325,10 @@ export const ChatScreen = () => {
       {/* input section */}
       <KeyboardAvoidingView
         style={styles.inputWrapper}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={0}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
       >
         <View style={[styles.inputContainer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
-          {/* stop button when speaking */}
-          {isSpeaking && (
-            <TouchableOpacity
-              style={styles.stopButton}
-              onPress={stopSpeaking}
-            >
-              <Text style={styles.stopText}>Stop</Text>
-            </TouchableOpacity>
-          )}
           <TextInput
             value={input}
             onChangeText={setInput}
@@ -335,13 +339,22 @@ export const ChatScreen = () => {
             maxLength={500}
             editable={!isLoading}
           />
-          <TouchableOpacity
-            style={[styles.sendButton, (!input.trim() || isLoading) && styles.sendButtonDisabled]}
-            onPress={sendMessage}
-            disabled={!input.trim() || isLoading}
-          >
-            <Text style={styles.sendText}>Send</Text>
-          </TouchableOpacity>
+          {isSpeaking ? (
+            <TouchableOpacity
+              style={styles.stopButton}
+              onPress={stopSpeaking}
+            >
+              <Text style={styles.stopText}>Stop</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={[styles.sendButton, (!input.trim() || isLoading) && styles.sendButtonDisabled]}
+              onPress={sendMessage}
+              disabled={!input.trim() || isLoading}
+            >
+              <Text style={styles.sendText}>Send</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </KeyboardAvoidingView>
     </View>
@@ -464,11 +477,16 @@ const styles = StyleSheet.create({
     fontSize: 16
   },
   stopButton: {
-    backgroundColor: 'rgba(255, 100, 100, 0.8)',
-    paddingHorizontal: 20,
+    backgroundColor: '#ff6b6b',
+    paddingHorizontal: 28,
     paddingVertical: 14,
     borderRadius: 24,
-    justifyContent: 'center'
+    justifyContent: 'center',
+    shadowColor: '#ff6b6b',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 6
   },
   stopText: {
     color: '#fff',
