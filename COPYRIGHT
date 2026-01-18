@@ -1,0 +1,39 @@
+COPYRIGHT NOTICE
+
+Luna AI
+Copyright (c) 2025 Ritik Lakhwani
+All Rights Reserved
+
+This application, including all source code, assets, designs, and associated
+documentation files, is the intellectual property of Ritik Lakhwani.
+
+OWNERSHIP
+---------
+Luna AI and all related materials are owned by Ritik Lakhwani. This includes
+but is not limited to:
+- Application source code
+- User interface designs
+- Video and audio assets
+- Brand name and logo
+- Documentation
+
+CONTACT
+-------
+Developer: Ritik Lakhwani
+Email: ritiklakhwani28@gmail.com
+
+THIRD-PARTY COMPONENTS
+----------------------
+This application uses the following third-party services and libraries:
+- Hugging Face - AI model inference
+- Solana Blockchain - Payment processing
+- Solana Mobile Wallet Adapter - Wallet integration
+- Expo - React Native framework
+- Various open-source libraries (see package.json for full list)
+
+Each third-party component is subject to its own license terms.
+
+DATE
+----
+First Published: January 2025
+Last Updated: January 2025

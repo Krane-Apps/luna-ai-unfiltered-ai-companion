@@ -51,3 +51,8 @@ src/assets/luna-naighty*.mp4
 # launcher icons (generated)
 ic_launcher/
 ic_launcher_round/
+
+# publishing secrets (NEVER COMMIT)
+publishing/publisher-keypair.json
+publishing/WALLET_INFO.md
+publishing/node_modules/

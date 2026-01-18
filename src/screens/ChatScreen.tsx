@@ -1,6 +1,6 @@
 // main chat screen with full screen video and voice interaction
 
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import {
   View,
   TextInput,
@@ -11,7 +11,8 @@ import {
   Keyboard,
   Platform,
   StatusBar,
-  Animated
+  Animated,
+  ScrollView
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useVideoPlayer, VideoView } from 'expo-video'
@@ -26,7 +27,7 @@ import { AvatarState } from '../types'
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window')
 
-// video assets
+// video assets - use stable references
 const speakingVideos = [
   require('../assets/luna-speaking-1.mp4'),
   require('../assets/luna-speaking-2.mp4'),
@@ -53,34 +54,29 @@ export const ChatScreen = () => {
   const [paymentError, setPaymentError] = useState<string>()
   const [hasActiveSession, setHasActiveSession] = useState(false)
   const [currentSubtitle, setCurrentSubtitle] = useState('')
+  const [showSubtitleBox, setShowSubtitleBox] = useState(false)
   const [avatarState, setAvatarState] = useState<AvatarState>('listening')
+  const pendingSubtitleRef = useRef<string>('')
 
   const subtitleFadeAnim = useRef(new Animated.Value(0)).current
   const keyboardHeight = useRef(new Animated.Value(0)).current
-  const videoFadeAnim = useRef(new Animated.Value(1)).current
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isMountedRef = useRef(true)
   const speakingVideoRef = useRef(getRandomSpeakingVideo())
-  const [activePlayer, setActivePlayer] = useState<'A' | 'B'>('A')
-  const [videoSourceA, setVideoSourceA] = useState(videoAssets.listening)
-  const [videoSourceB, setVideoSourceB] = useState(videoAssets.thinking)
+  const lastVideoSourceRef = useRef(videoAssets.listening)
   const insets = useSafeAreaInsets()
 
-  // dual video players for smooth crossfade
-  const playerA = useVideoPlayer(videoSourceA, (p) => {
+  // single video player - use replace() method to change source instead of recreating
+  const player = useVideoPlayer(videoAssets.listening, (p) => {
     p.loop = true
     p.muted = true
     p.play()
   })
 
-  const playerB = useVideoPlayer(videoSourceB, (p) => {
-    p.loop = true
-    p.muted = true
-    p.play()
-  })
-
-  // smooth video transition when avatar state changes
+  // change video source using replace() method - no player recreation
   useEffect(() => {
+    if (!player) return
+
     let newSource
     if (avatarState === 'speaking') {
       newSource = speakingVideoRef.current
@@ -88,49 +84,29 @@ export const ChatScreen = () => {
       newSource = videoAssets[avatarState]
     }
 
-    // load new source into inactive player, then crossfade
-    if (activePlayer === 'A') {
-      setVideoSourceB(newSource)
-      // small delay to let new video load
-      setTimeout(() => {
-        Animated.timing(videoFadeAnim, {
-          toValue: 0,
-          duration: 200,
-          useNativeDriver: true
-        }).start(() => {
-          setActivePlayer('B')
-        })
-      }, 50)
-    } else {
-      setVideoSourceA(newSource)
-      setTimeout(() => {
-        Animated.timing(videoFadeAnim, {
-          toValue: 1,
-          duration: 200,
-          useNativeDriver: true
-        }).start(() => {
-          setActivePlayer('A')
-        })
-      }, 50)
+    // only replace if source actually changed
+    if (newSource !== lastVideoSourceRef.current) {
+      lastVideoSourceRef.current = newSource
+      try {
+        player.replace(newSource)
+        player.loop = true
+        player.muted = true
+        player.play()
+      } catch (e) {
+        // ignore errors during video transition
+        console.log('video replace error:', e)
+      }
     }
-  }, [avatarState])
+  }, [avatarState, player])
 
-  // ensure players keep playing
+  // ensure player keeps playing
   useEffect(() => {
-    if (playerA) {
-      playerA.loop = true
-      playerA.muted = true
-      playerA.play()
+    if (player) {
+      player.loop = true
+      player.muted = true
+      player.play()
     }
-  }, [playerA, videoSourceA])
-
-  useEffect(() => {
-    if (playerB) {
-      playerB.loop = true
-      playerB.muted = true
-      playerB.play()
-    }
-  }, [playerB, videoSourceB])
+  }, [player])
 
   // track mounted state for cleanup
   useEffect(() => {
@@ -248,8 +224,16 @@ export const ChatScreen = () => {
     }
   }
 
-  const showSubtitle = (text: string) => {
-    setCurrentSubtitle(text)
+  // prepare subtitle but don't show yet - wait for audio
+  const prepareSubtitle = (text: string) => {
+    pendingSubtitleRef.current = text
+  }
+
+  // show subtitle when audio starts playing
+  const showSubtitleNow = () => {
+    if (!pendingSubtitleRef.current) return
+    setCurrentSubtitle(pendingSubtitleRef.current)
+    setShowSubtitleBox(true)
     subtitleFadeAnim.setValue(0)
     Animated.timing(subtitleFadeAnim, {
       toValue: 1,
@@ -265,15 +249,19 @@ export const ChatScreen = () => {
       useNativeDriver: true
     }).start(() => {
       setCurrentSubtitle('')
+      setShowSubtitleBox(false)
+      pendingSubtitleRef.current = ''
     })
   }
 
   const startConversation = async () => {
-    showSubtitle(WELCOME_MESSAGE)
+    prepareSubtitle(WELCOME_MESSAGE)
     setIsSpeaking(true)
 
     const audioUrl = await generateSpeech(WELCOME_MESSAGE)
     if (audioUrl && isMountedRef.current) {
+      // show subtitle only when audio starts
+      showSubtitleNow()
       await audioService.playAudio(audioUrl, () => {
         if (isMountedRef.current) {
           setIsSpeaking(false)
@@ -281,6 +269,8 @@ export const ChatScreen = () => {
         }
       })
     } else if (isMountedRef.current) {
+      // no audio - show subtitle anyway for a few seconds
+      showSubtitleNow()
       setIsSpeaking(false)
       setTimeout(() => {
         if (isMountedRef.current) hideSubtitle()
@@ -321,7 +311,7 @@ export const ChatScreen = () => {
     if (!isMountedRef.current) return
 
     setIsLoading(false)
-    showSubtitle(response)
+    prepareSubtitle(response)
     setIsSpeaking(true)
 
     const audioUrl = await generateSpeech(response)
@@ -329,6 +319,8 @@ export const ChatScreen = () => {
     if (!isMountedRef.current) return
 
     if (audioUrl) {
+      // show subtitle only when audio starts
+      showSubtitleNow()
       await audioService.playAudio(audioUrl, () => {
         if (isMountedRef.current) {
           setIsSpeaking(false)
@@ -336,6 +328,8 @@ export const ChatScreen = () => {
         }
       })
     } else {
+      // no audio - show subtitle anyway
+      showSubtitleNow()
       setIsSpeaking(false)
       setTimeout(() => {
         if (isMountedRef.current) hideSubtitle()
@@ -363,24 +357,14 @@ export const ChatScreen = () => {
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
-      {/* dual video players for smooth crossfade */}
-      {playerB && (
+      {/* single video player - source changed via replace() */}
+      {player && (
         <VideoView
-          player={playerB}
+          player={player}
           style={styles.video}
           contentFit="cover"
           nativeControls={false}
         />
-      )}
-      {playerA && (
-        <Animated.View style={[styles.video, { opacity: videoFadeAnim }]}>
-          <VideoView
-            player={playerA}
-            style={styles.videoInner}
-            contentFit="cover"
-            nativeControls={false}
-          />
-        </Animated.View>
       )}
 
       {/* dark overlay at top only */}
@@ -394,10 +378,16 @@ export const ChatScreen = () => {
         )}
       </View>
 
-      {/* subtitle area */}
-      {currentSubtitle !== '' && (
+      {/* subtitle area - smaller box, scrollable, positioned lower */}
+      {showSubtitleBox && currentSubtitle !== '' && (
         <Animated.View style={[styles.subtitleContainer, { opacity: subtitleFadeAnim }]}>
-          <Text style={styles.subtitle}>"{currentSubtitle}"</Text>
+          <ScrollView
+            style={styles.subtitleScroll}
+            showsVerticalScrollIndicator={true}
+            persistentScrollbar={true}
+          >
+            <Text style={styles.subtitle}>"{currentSubtitle}"</Text>
+          </ScrollView>
         </Animated.View>
       )}
 
@@ -458,10 +448,6 @@ const styles = StyleSheet.create({
     width: SCREEN_WIDTH,
     height: SCREEN_HEIGHT
   },
-  videoInner: {
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT
-  },
   topOverlay: {
     position: 'absolute',
     top: 0,
@@ -491,33 +477,37 @@ const styles = StyleSheet.create({
   },
   subtitleContainer: {
     position: 'absolute',
-    bottom: 180,
-    left: 20,
-    right: 20,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    borderRadius: 16,
-    padding: 20,
-    borderLeftWidth: 4,
+    bottom: 100,
+    left: 16,
+    right: 16,
+    maxHeight: 100,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    borderRadius: 12,
+    padding: 12,
+    borderLeftWidth: 3,
     borderLeftColor: '#ff69b4'
   },
+  subtitleScroll: {
+    maxHeight: 76
+  },
   subtitle: {
-    fontSize: 18,
+    fontSize: 14,
     color: '#fff',
     fontStyle: 'italic',
-    lineHeight: 26
+    lineHeight: 20
   },
   loadingContainer: {
     position: 'absolute',
-    bottom: 180,
-    left: 20,
-    right: 20,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    borderRadius: 16,
-    padding: 20,
+    bottom: 100,
+    left: 16,
+    right: 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    borderRadius: 12,
+    padding: 12,
     alignItems: 'center'
   },
   loadingText: {
-    fontSize: 16,
+    fontSize: 14,
     color: '#ff69b4',
     fontStyle: 'italic'
   },

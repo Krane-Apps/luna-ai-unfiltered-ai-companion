@@ -1,0 +1,39 @@
+{
+  "assets": {
+    "media/play_store_512.png": {
+      "path": "media/play_store_512.png",
+      "sha256": "dwGd2rGE1yLTnjJoacLTuSa1vqbVNIcmK/3rM6/y5O8=",
+      "uri": "https://arweave.net/RiibP0pX3_YDslkm0JyxjFCmD7MDraSFNtFvo7HRt_Q"
+    },
+    "media/luna-ai-v1.0.0-signed.apk": {
+      "path": "media/luna-ai-v1.0.0-signed.apk",
+      "sha256": "zb4rz3zDyu/POeal8zsgryLvNHFwtOHAuwJ9dWBd8Gc=",
+      "uri": "https://arweave.net/V_If9Sfn_F7SvelgonRZCWu7UTtCyUe3iEuL18f5KB0"
+    },
+    "media/lunabanner.png": {
+      "path": "media/lunabanner.png",
+      "sha256": "FlarLoR4g0mQKL6ZPvgxS2Z/fLwiuifP3mtqeCSwW3g=",
+      "uri": "https://arweave.net/EmBV3aIHpR9e0jWbmRx-A9ns_0iFE3TgvJQenEt5KS4"
+    },
+    "media/screenshot-1.png": {
+      "path": "media/screenshot-1.png",
+      "sha256": "uqA0EbBSBcrahZoaxw0lpSAA8nrPCOyWMtuDth7evI8=",
+      "uri": "https://arweave.net/Qh7v2usnw-bagfsTwTYrCPTF-K1f7JQkZp-BPdKZJCA"
+    },
+    "media/screenshot-2.png": {
+      "path": "media/screenshot-2.png",
+      "sha256": "tvBMZj8jRDVZ/k6Ab2lJOqcg4vLzthd2crjJ6OWQOFc=",
+      "uri": "https://arweave.net/fW7yMCeu0Ej6ZLPzcN0nbD548_y_6jb6AJP77gjDPdM"
+    },
+    "media/screenshot-3.png": {
+      "path": "media/screenshot-3.png",
+      "sha256": "SMN5ceurlcM8cV2Ma7jZ28bsptxfhyXYaNPMJqoHcmg=",
+      "uri": "https://arweave.net/bORWKAmVBobmb83VGGvfqExiZhdpZBp302lJsDWweCM"
+    },
+    "media/screenshot-4.png": {
+      "path": "media/screenshot-4.png",
+      "sha256": "1D9J3IPpGrMsi0bfkBrr3WbEXDAQSUa3GafzCQ0FcNw=",
+      "uri": "https://arweave.net/Ku8Y6V5lWChXY1GvMv6gm7W20jTU6kIH4Zhl0-smxaY"
+    }
+  }
+}

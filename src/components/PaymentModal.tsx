@@ -65,15 +65,12 @@ export const PaymentModal = ({
   const pulseAnim = useRef(new Animated.Value(1)).current
   const fadeAnim = useRef(new Animated.Value(0)).current
   const subtitleFadeAnim = useRef(new Animated.Value(1)).current
-  const videoFadeAnim = useRef(new Animated.Value(1)).current
   const messageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isPlayingRef = useRef(false)
   const isMountedRef = useRef(true)
   const speakingVideoRef = useRef(getRandomSpeakingVideo())
   const soundRef = useRef<Audio.Sound | null>(null)
-  const [activePlayer, setActivePlayer] = useState<'A' | 'B'>('A')
-  const [videoSourceA, setVideoSourceA] = useState(videoAssets.listening)
-  const [videoSourceB, setVideoSourceB] = useState(speakingVideos[0])
+  const lastVideoSourceRef = useRef(videoAssets.listening)
   const insets = useSafeAreaInsets()
 
   // track mounted state for cleanup
@@ -84,47 +81,33 @@ export const PaymentModal = ({
     }
   }, [])
 
-  // dual video players for smooth crossfade
-  const playerA = useVideoPlayer(videoSourceA, (p) => {
+  // single video player - use replace() method to change source
+  const player = useVideoPlayer(videoAssets.listening, (p) => {
     p.loop = true
     p.muted = true
     p.play()
   })
 
-  const playerB = useVideoPlayer(videoSourceB, (p) => {
-    p.loop = true
-    p.muted = true
-    p.play()
-  })
-
-  // smooth video transition when speaking state changes
+  // change video source using replace() method - no player recreation
   useEffect(() => {
+    if (!player) return
+
     const newSource = isSpeaking ? speakingVideoRef.current : videoAssets.listening
 
-    if (activePlayer === 'A') {
-      setVideoSourceB(newSource)
-      setTimeout(() => {
-        Animated.timing(videoFadeAnim, {
-          toValue: 0,
-          duration: 200,
-          useNativeDriver: true
-        }).start(() => {
-          setActivePlayer('B')
-        })
-      }, 50)
-    } else {
-      setVideoSourceA(newSource)
-      setTimeout(() => {
-        Animated.timing(videoFadeAnim, {
-          toValue: 1,
-          duration: 200,
-          useNativeDriver: true
-        }).start(() => {
-          setActivePlayer('A')
-        })
-      }, 50)
+    // only replace if source actually changed
+    if (newSource !== lastVideoSourceRef.current) {
+      lastVideoSourceRef.current = newSource
+      try {
+        player.replace(newSource)
+        player.loop = true
+        player.muted = true
+        player.play()
+      } catch (e) {
+        // ignore errors during video transition
+        console.log('video replace error:', e)
+      }
     }
-  }, [isSpeaking])
+  }, [isSpeaking, player])
 
   // pick new random speaking video when speaking starts
   useEffect(() => {
@@ -133,22 +116,14 @@ export const PaymentModal = ({
     }
   }, [isSpeaking])
 
-  // ensure players keep playing
+  // ensure player keeps playing
   useEffect(() => {
-    if (playerA) {
-      playerA.loop = true
-      playerA.muted = true
-      playerA.play()
+    if (player) {
+      player.loop = true
+      player.muted = true
+      player.play()
     }
-  }, [playerA, videoSourceA])
-
-  useEffect(() => {
-    if (playerB) {
-      playerB.loop = true
-      playerB.muted = true
-      playerB.play()
-    }
-  }, [playerB, videoSourceB])
+  }, [player])
 
   const stopAudio = useCallback(async () => {
     if (soundRef.current) {
@@ -295,24 +270,14 @@ export const PaymentModal = ({
 
   return (
     <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
-      {/* dual video players for smooth crossfade */}
-      {playerB && (
+      {/* single video player - source changed via replace() */}
+      {player && (
         <VideoView
-          player={playerB}
+          player={player}
           style={styles.video}
           contentFit="cover"
           nativeControls={false}
         />
-      )}
-      {playerA && (
-        <Animated.View style={[styles.video, { opacity: videoFadeAnim }]}>
-          <VideoView
-            player={playerA}
-            style={styles.videoInner}
-            contentFit="cover"
-            nativeControls={false}
-          />
-        </Animated.View>
       )}
 
       {/* dark overlay */}
@@ -392,10 +357,6 @@ const styles = StyleSheet.create({
     width: SCREEN_WIDTH,
     height: SCREEN_HEIGHT,
     position: 'absolute'
-  },
-  videoInner: {
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,

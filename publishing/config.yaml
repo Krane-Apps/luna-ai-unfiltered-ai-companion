@@ -1,0 +1,78 @@
+publisher:
+  name: Ritik Lakhwani
+  website: https://kraneapps.com
+  email: ritiklakhwani28@gmail.com
+  support_email: ritiklakhwani28@gmail.com
+app:
+  name: Luna AI
+  address: 5wYMXTjyZRCfcMwCQWyS8fw1yofA3jBtPJw7CZZMY7wL
+  android_package: com.lunaai.app
+  urls:
+    license_url: https://kraneapps.com/lunaai/license
+    copyright_url: https://kraneapps.com/lunaai/copyright
+    privacy_policy_url: https://kraneapps.com/lunaai/privacy
+    website: https://kraneapps.com
+  media:
+    - purpose: icon
+      uri: media/play_store_512.png
+release:
+  address: BbgnvueEiZRVsTJxLui73ef4LiP8m4Mfeubr8xK5Mgwi
+  media:
+    - purpose: icon
+      uri: media/play_store_512.png
+    - purpose: banner
+      uri: media/lunabanner.png
+    - purpose: screenshot
+      uri: media/screenshot-1.png
+    - purpose: screenshot
+      uri: media/screenshot-2.png
+    - purpose: screenshot
+      uri: media/screenshot-3.png
+    - purpose: screenshot
+      uri: media/screenshot-4.png
+  files:
+    - purpose: install
+      uri: media/luna-ai-v1.0.0-signed.apk
+  catalog:
+    en-US:
+      name: Luna AI
+      short_description: Your unfiltered AI companion
+      long_description: |
+        Luna AI is your personal AI companion powered by advanced language models.
+
+        Chat freely about anything - Luna listens without judgment. Features include:
+
+        - Natural voice conversations with text-to-speech
+        - Video avatar that responds to your messages
+        - Secure Solana payments for premium sessions
+        - Privacy-focused design - your conversations stay private
+
+        Built for users who want an authentic AI experience. Pay with SOL for 30-minute conversation sessions.
+
+        Age restriction: 18+
+      new_in_version: Initial release with voice chat, video avatar, and Solana payments
+      saga_features: Optimized for Solana Mobile devices with native wallet integration
+  android_details:
+    cert_fingerprint: fac61745dc0903786fb9ede62a962b399f7348f0bb6f899b8332667591033b9c
+    min_sdk: 24
+    version: 1.0.0
+    version_code: 1
+    locales:
+      - en-US
+solana_mobile_dapp_publisher_portal:
+  google_store_package: com.lunaai.app
+  testing_instructions: |
+    1. Install the APK on your Solana Mobile device
+    2. Open Luna AI - you'll see the payment screen
+    3. Connect your wallet (Phantom or other Solana wallet)
+    4. Pay 0.01 SOL to start a 30-minute session
+    5. Chat with Luna using the text input
+    6. Luna responds with voice and video avatar
+
+    Note: Requires internet connection and a Solana wallet with SOL for payments.
+lastSubmittedVersionOnChain:
+  address: BbgnvueEiZRVsTJxLui73ef4LiP8m4Mfeubr8xK5Mgwi
+  version_code: 1
+  apk_hash: zb4rz3zDyu/POeal8zsgryLvNHFwtOHAuwJ9dWBd8Gc=
+lastUpdatedVersionOnStore:
+  address: BbgnvueEiZRVsTJxLui73ef4LiP8m4Mfeubr8xK5Mgwi
