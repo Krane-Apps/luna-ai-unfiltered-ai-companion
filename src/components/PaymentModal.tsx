@@ -1,6 +1,6 @@
 // payment screen with full video background and pre-generated audio messages
 
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Animated } from 'react-native'
 import { useVideoPlayer, VideoView } from 'expo-video'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -65,11 +65,15 @@ export const PaymentModal = ({
   const pulseAnim = useRef(new Animated.Value(1)).current
   const fadeAnim = useRef(new Animated.Value(0)).current
   const subtitleFadeAnim = useRef(new Animated.Value(1)).current
+  const videoFadeAnim = useRef(new Animated.Value(1)).current
   const messageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isPlayingRef = useRef(false)
   const isMountedRef = useRef(true)
   const speakingVideoRef = useRef(getRandomSpeakingVideo())
   const soundRef = useRef<Audio.Sound | null>(null)
+  const [activePlayer, setActivePlayer] = useState<'A' | 'B'>('A')
+  const [videoSourceA, setVideoSourceA] = useState(videoAssets.listening)
+  const [videoSourceB, setVideoSourceB] = useState(speakingVideos[0])
   const insets = useSafeAreaInsets()
 
   // track mounted state for cleanup
@@ -80,6 +84,48 @@ export const PaymentModal = ({
     }
   }, [])
 
+  // dual video players for smooth crossfade
+  const playerA = useVideoPlayer(videoSourceA, (p) => {
+    p.loop = true
+    p.muted = true
+    p.play()
+  })
+
+  const playerB = useVideoPlayer(videoSourceB, (p) => {
+    p.loop = true
+    p.muted = true
+    p.play()
+  })
+
+  // smooth video transition when speaking state changes
+  useEffect(() => {
+    const newSource = isSpeaking ? speakingVideoRef.current : videoAssets.listening
+
+    if (activePlayer === 'A') {
+      setVideoSourceB(newSource)
+      setTimeout(() => {
+        Animated.timing(videoFadeAnim, {
+          toValue: 0,
+          duration: 200,
+          useNativeDriver: true
+        }).start(() => {
+          setActivePlayer('B')
+        })
+      }, 50)
+    } else {
+      setVideoSourceA(newSource)
+      setTimeout(() => {
+        Animated.timing(videoFadeAnim, {
+          toValue: 1,
+          duration: 200,
+          useNativeDriver: true
+        }).start(() => {
+          setActivePlayer('A')
+        })
+      }, 50)
+    }
+  }, [isSpeaking])
+
   // pick new random speaking video when speaking starts
   useEffect(() => {
     if (isSpeaking) {
@@ -87,25 +133,22 @@ export const PaymentModal = ({
     }
   }, [isSpeaking])
 
-  // video player with expo-video
-  const videoSource = useMemo(
-    () => (isSpeaking ? speakingVideoRef.current : videoAssets.listening),
-    [isSpeaking]
-  )
-  const player = useVideoPlayer(videoSource, (player) => {
-    player.loop = true
-    player.muted = true
-    player.play()
-  })
-
-  // ensure video keeps playing when source changes
+  // ensure players keep playing
   useEffect(() => {
-    if (player) {
-      player.loop = true
-      player.muted = true
-      player.play()
+    if (playerA) {
+      playerA.loop = true
+      playerA.muted = true
+      playerA.play()
     }
-  }, [player, videoSource])
+  }, [playerA, videoSourceA])
+
+  useEffect(() => {
+    if (playerB) {
+      playerB.loop = true
+      playerB.muted = true
+      playerB.play()
+    }
+  }, [playerB, videoSourceB])
 
   const stopAudio = useCallback(async () => {
     if (soundRef.current) {
@@ -252,14 +295,24 @@ export const PaymentModal = ({
 
   return (
     <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
-      {/* full screen video */}
-      {player && (
+      {/* dual video players for smooth crossfade */}
+      {playerB && (
         <VideoView
-          player={player}
+          player={playerB}
           style={styles.video}
           contentFit="cover"
           nativeControls={false}
         />
+      )}
+      {playerA && (
+        <Animated.View style={[styles.video, { opacity: videoFadeAnim }]}>
+          <VideoView
+            player={playerA}
+            style={styles.videoInner}
+            contentFit="cover"
+            nativeControls={false}
+          />
+        </Animated.View>
       )}
 
       {/* dark overlay */}
@@ -339,6 +392,10 @@ const styles = StyleSheet.create({
     width: SCREEN_WIDTH,
     height: SCREEN_HEIGHT,
     position: 'absolute'
+  },
+  videoInner: {
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,

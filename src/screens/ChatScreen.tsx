@@ -8,7 +8,7 @@ import {
   Text,
   StyleSheet,
   Dimensions,
-  KeyboardAvoidingView,
+  Keyboard,
   Platform,
   StatusBar,
   Animated
@@ -56,32 +56,81 @@ export const ChatScreen = () => {
   const [avatarState, setAvatarState] = useState<AvatarState>('listening')
 
   const subtitleFadeAnim = useRef(new Animated.Value(0)).current
+  const keyboardHeight = useRef(new Animated.Value(0)).current
+  const videoFadeAnim = useRef(new Animated.Value(1)).current
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isMountedRef = useRef(true)
   const speakingVideoRef = useRef(getRandomSpeakingVideo())
+  const [activePlayer, setActivePlayer] = useState<'A' | 'B'>('A')
+  const [videoSourceA, setVideoSourceA] = useState(videoAssets.listening)
+  const [videoSourceB, setVideoSourceB] = useState(videoAssets.thinking)
   const insets = useSafeAreaInsets()
 
-  // video player with expo-video - use stable source to avoid player recreation issues
-  const videoSource = useMemo(() => {
-    if (avatarState === 'speaking') {
-      return speakingVideoRef.current
-    }
-    return videoAssets[avatarState]
-  }, [avatarState])
-  const player = useVideoPlayer(videoSource, (player) => {
-    player.loop = true
-    player.muted = true
-    player.play()
+  // dual video players for smooth crossfade
+  const playerA = useVideoPlayer(videoSourceA, (p) => {
+    p.loop = true
+    p.muted = true
+    p.play()
   })
 
-  // ensure video keeps playing when source changes
+  const playerB = useVideoPlayer(videoSourceB, (p) => {
+    p.loop = true
+    p.muted = true
+    p.play()
+  })
+
+  // smooth video transition when avatar state changes
   useEffect(() => {
-    if (player) {
-      player.loop = true
-      player.muted = true
-      player.play()
+    let newSource
+    if (avatarState === 'speaking') {
+      newSource = speakingVideoRef.current
+    } else {
+      newSource = videoAssets[avatarState]
     }
-  }, [player, videoSource])
+
+    // load new source into inactive player, then crossfade
+    if (activePlayer === 'A') {
+      setVideoSourceB(newSource)
+      // small delay to let new video load
+      setTimeout(() => {
+        Animated.timing(videoFadeAnim, {
+          toValue: 0,
+          duration: 200,
+          useNativeDriver: true
+        }).start(() => {
+          setActivePlayer('B')
+        })
+      }, 50)
+    } else {
+      setVideoSourceA(newSource)
+      setTimeout(() => {
+        Animated.timing(videoFadeAnim, {
+          toValue: 1,
+          duration: 200,
+          useNativeDriver: true
+        }).start(() => {
+          setActivePlayer('A')
+        })
+      }, 50)
+    }
+  }, [avatarState])
+
+  // ensure players keep playing
+  useEffect(() => {
+    if (playerA) {
+      playerA.loop = true
+      playerA.muted = true
+      playerA.play()
+    }
+  }, [playerA, videoSourceA])
+
+  useEffect(() => {
+    if (playerB) {
+      playerB.loop = true
+      playerB.muted = true
+      playerB.play()
+    }
+  }, [playerB, videoSourceB])
 
   // track mounted state for cleanup
   useEffect(() => {
@@ -90,6 +139,33 @@ export const ChatScreen = () => {
       isMountedRef.current = false
     }
   }, [])
+
+  // keyboard handling for android
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow'
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide'
+
+    const showSub = Keyboard.addListener(showEvent, (e) => {
+      Animated.timing(keyboardHeight, {
+        toValue: e.endCoordinates.height,
+        duration: Platform.OS === 'ios' ? 250 : 100,
+        useNativeDriver: false
+      }).start()
+    })
+
+    const hideSub = Keyboard.addListener(hideEvent, () => {
+      Animated.timing(keyboardHeight, {
+        toValue: 0,
+        duration: Platform.OS === 'ios' ? 250 : 100,
+        useNativeDriver: false
+      }).start()
+    })
+
+    return () => {
+      showSub.remove()
+      hideSub.remove()
+    }
+  }, [keyboardHeight])
 
   useEffect(() => {
     const init = async () => {
@@ -287,14 +363,24 @@ export const ChatScreen = () => {
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
-      {/* full screen video */}
-      {player && (
+      {/* dual video players for smooth crossfade */}
+      {playerB && (
         <VideoView
-          player={player}
+          player={playerB}
           style={styles.video}
           contentFit="cover"
           nativeControls={false}
         />
+      )}
+      {playerA && (
+        <Animated.View style={[styles.video, { opacity: videoFadeAnim }]}>
+          <VideoView
+            player={playerA}
+            style={styles.videoInner}
+            contentFit="cover"
+            nativeControls={false}
+          />
+        </Animated.View>
       )}
 
       {/* dark overlay at top only */}
@@ -323,12 +409,13 @@ export const ChatScreen = () => {
       )}
 
       {/* input section */}
-      <KeyboardAvoidingView
-        style={styles.inputWrapper}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+      <Animated.View
+        style={[
+          styles.inputWrapper,
+          { bottom: keyboardHeight, paddingBottom: Math.max(insets.bottom, 16) }
+        ]}
       >
-        <View style={[styles.inputContainer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+        <View style={styles.inputContainer}>
           <TextInput
             value={input}
             onChangeText={setInput}
@@ -356,7 +443,7 @@ export const ChatScreen = () => {
             </TouchableOpacity>
           )}
         </View>
-      </KeyboardAvoidingView>
+      </Animated.View>
     </View>
   )
 }
@@ -368,6 +455,10 @@ const styles = StyleSheet.create({
   },
   video: {
     ...StyleSheet.absoluteFillObject,
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT
+  },
+  videoInner: {
     width: SCREEN_WIDTH,
     height: SCREEN_HEIGHT
   },
@@ -434,12 +525,14 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: 0,
     left: 0,
-    right: 0
+    right: 0,
+    backgroundColor: 'rgba(10, 10, 15, 0.8)'
   },
   inputContainer: {
     flexDirection: 'row',
     paddingHorizontal: 16,
     paddingTop: 12,
+    paddingBottom: 12,
     alignItems: 'flex-end',
     gap: 12
   },
