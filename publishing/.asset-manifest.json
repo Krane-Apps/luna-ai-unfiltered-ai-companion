@@ -34,6 +34,11 @@
       "path": "media/screenshot-4.png",
       "sha256": "1D9J3IPpGrMsi0bfkBrr3WbEXDAQSUa3GafzCQ0FcNw=",
       "uri": "https://arweave.net/Ku8Y6V5lWChXY1GvMv6gm7W20jTU6kIH4Zhl0-smxaY"
+    },
+    "media/luna-ai-v1.0.1-signed.apk": {
+      "path": "media/luna-ai-v1.0.1-signed.apk",
+      "sha256": "EO0B8g4ijLFNNMDbdk+CJJdZyREicjnz9DcIEbYotTM=",
+      "uri": "https://arweave.net/3whadyzl3T98wEOcHyZrZHvYhofW1Lx40eGHrWQpxoA"
     }
   }
 }

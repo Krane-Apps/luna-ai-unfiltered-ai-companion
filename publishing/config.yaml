@@ -16,7 +16,7 @@ app:
     - purpose: icon
       uri: media/play_store_512.png
 release:
-  address: BbgnvueEiZRVsTJxLui73ef4LiP8m4Mfeubr8xK5Mgwi
+  address: 9kL2qGp8CNvnmJmWT3UU94CnJrge3oBK8XTeTiyrjmW
   media:
     - purpose: icon
       uri: media/play_store_512.png
@@ -32,7 +32,7 @@ release:
       uri: media/screenshot-4.png
   files:
     - purpose: install
-      uri: media/luna-ai-v1.0.0-signed.apk
+      uri: media/luna-ai-v1.0.1-signed.apk
   catalog:
     en-US:
       name: Luna AI
@@ -50,13 +50,13 @@ release:
         Built for users who want an authentic AI experience. Pay with SOL for 30-minute conversation sessions.
 
         Age restriction: 18+
-      new_in_version: Initial release with voice chat, video avatar, and Solana payments
+      new_in_version: Fixed keyboard hiding text input on Android, improved video transitions, updated treasury wallet
       saga_features: Optimized for Solana Mobile devices with native wallet integration
   android_details:
     cert_fingerprint: fac61745dc0903786fb9ede62a962b399f7348f0bb6f899b8332667591033b9c
     min_sdk: 24
-    version: 1.0.0
-    version_code: 1
+    version: 1.0.1
+    version_code: 2
     locales:
       - en-US
 solana_mobile_dapp_publisher_portal:
@@ -71,8 +71,8 @@ solana_mobile_dapp_publisher_portal:
 
     Note: Requires internet connection and a Solana wallet with SOL for payments.
 lastSubmittedVersionOnChain:
-  address: BbgnvueEiZRVsTJxLui73ef4LiP8m4Mfeubr8xK5Mgwi
-  version_code: 1
-  apk_hash: zb4rz3zDyu/POeal8zsgryLvNHFwtOHAuwJ9dWBd8Gc=
+  address: 9kL2qGp8CNvnmJmWT3UU94CnJrge3oBK8XTeTiyrjmW
+  version_code: 2
+  apk_hash: EO0B8g4ijLFNNMDbdk+CJJdZyREicjnz9DcIEbYotTM=
 lastUpdatedVersionOnStore:
-  address: BbgnvueEiZRVsTJxLui73ef4LiP8m4Mfeubr8xK5Mgwi
+  address: 9kL2qGp8CNvnmJmWT3UU94CnJrge3oBK8XTeTiyrjmW

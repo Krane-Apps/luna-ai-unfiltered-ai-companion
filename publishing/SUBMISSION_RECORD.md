@@ -9,8 +9,8 @@
 |-------|-------|
 | App Name | Luna AI |
 | Package Name | com.lunaai.app |
-| Version | 1.0.0 |
-| Version Code | 1 |
+| Version | 1.0.1 |
+| Version Code | 2 |
 | Min SDK | 24 |
 
 ## Publisher Information
@@ -28,14 +28,26 @@
 - **Address:** `5wYMXTjyZRCfcMwCQWyS8fw1yofA3jBtPJw7CZZMY7wL`
 - **Explorer:** https://explorer.solana.com/address/5wYMXTjyZRCfcMwCQWyS8fw1yofA3jBtPJw7CZZMY7wL?cluster=mainnet
 
-### Release NFT
+### Release NFT (Current: v1.0.1)
+- **Address:** `9kL2qGp8CNvnmJmWT3UU94CnJrge3oBK8XTeTiyrjmW`
+- **Explorer:** https://explorer.solana.com/address/9kL2qGp8CNvnmJmWT3UU94CnJrge3oBK8XTeTiyrjmW?cluster=mainnet
+
+### Release NFT (v1.0.0 - Previous)
 - **Address:** `BbgnvueEiZRVsTJxLui73ef4LiP8m4Mfeubr8xK5Mgwi`
 - **Explorer:** https://explorer.solana.com/address/BbgnvueEiZRVsTJxLui73ef4LiP8m4Mfeubr8xK5Mgwi?cluster=mainnet
 
 ### Publisher Wallet
 - **Address:** `6Z8ZcGhDpQBrgEyMVUxu9vWTaNb6nXirbEf5ZgkbkYnt`
 
-## APK Details
+## APK Details (Current: v1.0.1)
+
+| Field | Value |
+|-------|-------|
+| File | luna-ai-v1.0.1-signed.apk |
+| APK Hash | EO0B8g4ijLFNNMDbdk+CJJdZyREicjnz9DcIEbYotTM= |
+| Cert Fingerprint | fac61745dc0903786fb9ede62a962b399f7348f0bb6f899b8332667591033b9c |
+
+## APK Details (v1.0.0 - Previous)
 
 | Field | Value |
 |-------|-------|
@@ -45,7 +57,10 @@
 
 ## Arweave URLs
 
-### APK
+### APK (v1.0.1 - Current)
+https://arweave.net/3whadyzl3T98wEOcHyZrZHvYhofW1Lx40eGHrWQpxoA
+
+### APK (v1.0.0 - Previous)
 https://arweave.net/V_If9Sfn_F7SvelgonRZCWu7UTtCyUe3iEuL18f5KB0
 
 ### Icon (512x512)
@@ -87,7 +102,10 @@ Built for users who want an authentic AI experience. Pay with SOL for 30-minute 
 
 Age restriction: 18+
 
-**What's New:**
+**What's New (v1.0.1):**
+Fixed keyboard hiding text input on Android, improved video transitions, updated treasury wallet
+
+**What's New (v1.0.0):**
 Initial release with voice chat, video avatar, and Solana payments
 
 **Saga Features:**
@@ -106,8 +124,9 @@ Note: Requires internet connection and a Solana wallet with SOL for payments.
 
 ## Review Status
 
-- **Submitted:** January 18, 2025
-- **Status:** Pending Review
+- **Latest Update Submitted:** January 18, 2025 (v1.0.1)
+- **Initial Submission:** January 18, 2025 (v1.0.0)
+- **Status:** Update Published
 - **Estimated Review Time:** 3-4 business days
 
 ## Next Steps
@@ -121,7 +140,8 @@ Note: Requires internet connection and a Solana wallet with SOL for payments.
 
 | Version | Version Code | Date | Status | Notes |
 |---------|--------------|------|--------|-------|
-| 1.0.0 | 1 | 2025-01-18 | Submitted | Initial release |
+| 1.0.1 | 2 | 2025-01-18 | Published | Fixed keyboard, video transitions, treasury wallet |
+| 1.0.0 | 1 | 2025-01-18 | Published | Initial release |
 
 ---
 

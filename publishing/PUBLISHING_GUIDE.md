@@ -109,7 +109,7 @@ This mints the App NFT and updates `config.yaml` with the app address.
 ### Step 1: Build Release APK
 
 ```bash
-cd /Users/bluntbrain/Documents/code/helius/luna-ai
+cd <project-root>
 
 # ensure version in app.json
 # version: "1.0.0"
@@ -172,7 +172,7 @@ Edit `app.json`:
 ### Step 2: Build New APK
 
 ```bash
-cd /Users/bluntbrain/Documents/code/helius/luna-ai
+cd <project-root>
 npx expo prebuild --platform android --clean
 cd android && ./gradlew assembleRelease
 

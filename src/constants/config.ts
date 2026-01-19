@@ -4,7 +4,7 @@ import { HF_TOKEN as ENV_HF_TOKEN, TREASURY_WALLET as ENV_TREASURY_WALLET } from
 import { PaymentConfig } from '../types'
 
 // fallback treasury wallet
-const DEFAULT_TREASURY_WALLET = 'AfywFvwHVrZji6rEzTccT2RjyZcpSoN8WheSShJxjMSL'
+const DEFAULT_TREASURY_WALLET = '4S93Yqn6yU15NYJZfC1ihAVvdnsxoRMD7X3Z4Dx59soU'
 
 // validate base58 characters
 const isValidBase58 = (str: string | undefined): boolean => {

@@ -59,6 +59,7 @@ export const ChatScreen = () => {
   const pendingSubtitleRef = useRef<string>('')
 
   const subtitleFadeAnim = useRef(new Animated.Value(0)).current
+  const [keyboardVisible, setKeyboardVisible] = useState(false)
   const keyboardHeight = useRef(new Animated.Value(0)).current
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isMountedRef = useRef(true)
@@ -116,12 +117,13 @@ export const ChatScreen = () => {
     }
   }, [])
 
-  // keyboard handling for android
+  // keyboard handling for android - animate input position based on keyboard height
   useEffect(() => {
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow'
     const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide'
 
     const showSub = Keyboard.addListener(showEvent, (e) => {
+      setKeyboardVisible(true)
       Animated.timing(keyboardHeight, {
         toValue: e.endCoordinates.height,
         duration: Platform.OS === 'ios' ? 250 : 100,
@@ -130,6 +132,7 @@ export const ChatScreen = () => {
     })
 
     const hideSub = Keyboard.addListener(hideEvent, () => {
+      setKeyboardVisible(false)
       Animated.timing(keyboardHeight, {
         toValue: 0,
         duration: Platform.OS === 'ios' ? 250 : 100,
@@ -152,11 +155,9 @@ export const ChatScreen = () => {
     init()
   }, [])
 
-  // handle avatar state
+  // handle avatar state - video is already selected before setIsSpeaking is called
   useEffect(() => {
     if (isSpeaking) {
-      // pick a new random speaking video each time
-      speakingVideoRef.current = getRandomSpeakingVideo()
       setAvatarState('speaking')
       clearIdleTimer()
     } else if (isLoading) {
@@ -256,11 +257,13 @@ export const ChatScreen = () => {
 
   const startConversation = async () => {
     prepareSubtitle(WELCOME_MESSAGE)
-    setIsSpeaking(true)
+    // don't set speaking yet - wait for audio to be ready
 
     const audioUrl = await generateSpeech(WELCOME_MESSAGE)
     if (audioUrl && isMountedRef.current) {
-      // show subtitle only when audio starts
+      // pick speaking video and start speaking only when audio is ready
+      speakingVideoRef.current = getRandomSpeakingVideo()
+      setIsSpeaking(true)
       showSubtitleNow()
       await audioService.playAudio(audioUrl, () => {
         if (isMountedRef.current) {
@@ -271,7 +274,6 @@ export const ChatScreen = () => {
     } else if (isMountedRef.current) {
       // no audio - show subtitle anyway for a few seconds
       showSubtitleNow()
-      setIsSpeaking(false)
       setTimeout(() => {
         if (isMountedRef.current) hideSubtitle()
       }, 3000)
@@ -312,14 +314,16 @@ export const ChatScreen = () => {
 
     setIsLoading(false)
     prepareSubtitle(response)
-    setIsSpeaking(true)
+    // don't set speaking yet - wait for audio to be ready
 
     const audioUrl = await generateSpeech(response)
 
     if (!isMountedRef.current) return
 
     if (audioUrl) {
-      // show subtitle only when audio starts
+      // pick speaking video and start speaking only when audio is ready
+      speakingVideoRef.current = getRandomSpeakingVideo()
+      setIsSpeaking(true)
       showSubtitleNow()
       await audioService.playAudio(audioUrl, () => {
         if (isMountedRef.current) {
@@ -330,7 +334,6 @@ export const ChatScreen = () => {
     } else {
       // no audio - show subtitle anyway
       showSubtitleNow()
-      setIsSpeaking(false)
       setTimeout(() => {
         if (isMountedRef.current) hideSubtitle()
       }, 4000)
@@ -378,9 +381,13 @@ export const ChatScreen = () => {
         )}
       </View>
 
-      {/* subtitle area - smaller box, scrollable, positioned lower */}
+      {/* subtitle area - smaller box, scrollable, moves up when keyboard visible */}
       {showSubtitleBox && currentSubtitle !== '' && (
-        <Animated.View style={[styles.subtitleContainer, { opacity: subtitleFadeAnim }]}>
+        <Animated.View style={[
+          styles.subtitleContainer,
+          { opacity: subtitleFadeAnim },
+          keyboardVisible && styles.subtitleContainerKeyboard
+        ]}>
           <ScrollView
             style={styles.subtitleScroll}
             showsVerticalScrollIndicator={true}
@@ -398,40 +405,42 @@ export const ChatScreen = () => {
         </View>
       )}
 
-      {/* input section */}
+      {/* input section - animated to move above keyboard */}
       <Animated.View
         style={[
-          styles.inputWrapper,
+          styles.inputAnimatedContainer,
           { bottom: keyboardHeight, paddingBottom: Math.max(insets.bottom, 16) }
         ]}
       >
-        <View style={styles.inputContainer}>
-          <TextInput
-            value={input}
-            onChangeText={setInput}
-            placeholder={isSpeaking ? "Type to interrupt Luna..." : "Talk to Luna..."}
-            placeholderTextColor="rgba(255,255,255,0.5)"
-            style={styles.input}
-            multiline
-            maxLength={500}
-            editable={!isLoading}
-          />
-          {isSpeaking ? (
-            <TouchableOpacity
-              style={styles.stopButton}
-              onPress={stopSpeaking}
-            >
-              <Text style={styles.stopText}>Stop</Text>
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity
-              style={[styles.sendButton, (!input.trim() || isLoading) && styles.sendButtonDisabled]}
-              onPress={sendMessage}
-              disabled={!input.trim() || isLoading}
-            >
-              <Text style={styles.sendText}>Send</Text>
-            </TouchableOpacity>
-          )}
+        <View style={styles.inputWrapper}>
+          <View style={styles.inputContainer}>
+            <TextInput
+              value={input}
+              onChangeText={setInput}
+              placeholder={isSpeaking ? "Type to interrupt Luna..." : "Talk to Luna..."}
+              placeholderTextColor="rgba(255,255,255,0.5)"
+              style={styles.input}
+              multiline
+              maxLength={500}
+              editable={!isLoading}
+            />
+            {isSpeaking ? (
+              <TouchableOpacity
+                style={styles.stopButton}
+                onPress={stopSpeaking}
+              >
+                <Text style={styles.stopText}>Stop</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={[styles.sendButton, (!input.trim() || isLoading) && styles.sendButtonDisabled]}
+                onPress={sendMessage}
+                disabled={!input.trim() || isLoading}
+              >
+                <Text style={styles.sendText}>Send</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
       </Animated.View>
     </View>
@@ -487,6 +496,9 @@ const styles = StyleSheet.create({
     borderLeftWidth: 3,
     borderLeftColor: '#ff69b4'
   },
+  subtitleContainerKeyboard: {
+    bottom: 320
+  },
   subtitleScroll: {
     maxHeight: 76
   },
@@ -511,12 +523,13 @@ const styles = StyleSheet.create({
     color: '#ff69b4',
     fontStyle: 'italic'
   },
-  inputWrapper: {
+  inputAnimatedContainer: {
     position: 'absolute',
-    bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: 'rgba(10, 10, 15, 0.8)'
+    backgroundColor: 'rgba(10, 10, 15, 0.9)'
+  },
+  inputWrapper: {
   },
   inputContainer: {
     flexDirection: 'row',
