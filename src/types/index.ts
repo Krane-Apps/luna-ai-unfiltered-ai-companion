@@ -20,9 +20,24 @@ export interface SessionState {
 }
 
 export interface PaymentConfig {
-  priceInSol: number
+  sessionPriceSOL: number
   sessionDurationMinutes: number
+  lifetimePriceSOL: number
   treasuryWallet: string
+}
+
+export interface UserProfile {
+  userName: string
+  userAge: number
+  userIntent: string
+  userInterests: string[]
+  flirtLevel: number // 1-5
+  relationshipStatus?: string
+  preferredTime?: string
+  boundaries?: string
+  hasCompletedOnboarding: boolean
+  hasLifetimeAccess: boolean
+  createdAt: number
 }
 
 export type AvatarMood = 'neutral' | 'happy' | 'thinking' | 'flirty' | 'speaking'

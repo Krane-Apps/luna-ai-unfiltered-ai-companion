@@ -1,11 +1,12 @@
 // payment screen with full video background and pre-generated audio messages
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Animated } from 'react-native'
+import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Animated, Linking } from 'react-native'
 import { useVideoPlayer, VideoView } from 'expo-video'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { Audio } from 'expo-av'
-import { PAYMENT_CONFIG, GRACE_PERIOD_MINUTES } from '../constants/config'
+import { PAYMENT_CONFIG, GRACE_PERIOD_MINUTES, DEV_MODE } from '../constants/config'
+import { getSOLPriceUSD, formatUSD } from '../services/price'
+import { audioService } from '../services/audio'
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window')
 
@@ -45,11 +46,14 @@ const CONVINCING_MESSAGES = [
   "Just 0.01 SOL baby, and we can talk about anything. Anything at all."
 ]
 
+export type PaymentOption = 'session' | 'lifetime'
+
 interface PaymentModalProps {
   visible: boolean
   isLoading: boolean
-  onPay: () => void
+  onPay: (option: PaymentOption) => void
   onClose: () => void
+  onDevBypass?: () => void
   error?: string
 }
 
@@ -58,10 +62,13 @@ export const PaymentModal = ({
   isLoading,
   onPay,
   onClose,
+  onDevBypass,
   error
 }: PaymentModalProps) => {
   const [currentMessageIndex, setCurrentMessageIndex] = useState(0)
   const [isSpeaking, setIsSpeaking] = useState(false)
+  const [selectedOption, setSelectedOption] = useState<PaymentOption>('lifetime')
+  const [solPriceUSD, setSolPriceUSD] = useState<number | null>(null)
   const pulseAnim = useRef(new Animated.Value(1)).current
   const fadeAnim = useRef(new Animated.Value(0)).current
   const subtitleFadeAnim = useRef(new Animated.Value(1)).current
@@ -69,7 +76,6 @@ export const PaymentModal = ({
   const isPlayingRef = useRef(false)
   const isMountedRef = useRef(true)
   const speakingVideoRef = useRef(getRandomSpeakingVideo())
-  const soundRef = useRef<Audio.Sound | null>(null)
   const lastVideoSourceRef = useRef(videoAssets.listening)
   const insets = useSafeAreaInsets()
 
@@ -125,18 +131,6 @@ export const PaymentModal = ({
     }
   }, [player])
 
-  const stopAudio = useCallback(async () => {
-    if (soundRef.current) {
-      try {
-        await soundRef.current.stopAsync()
-        await soundRef.current.unloadAsync()
-      } catch (e) {
-        // ignore errors during cleanup
-      }
-      soundRef.current = null
-    }
-  }, [])
-
   const clearMessageTimer = useCallback(() => {
     if (messageTimerRef.current) {
       clearTimeout(messageTimerRef.current)
@@ -159,60 +153,29 @@ export const PaymentModal = ({
     setCurrentMessageIndex(index)
     setIsSpeaking(true)
 
-    try {
-      // play local audio file (no API call needed)
-      const { sound } = await Audio.Sound.createAsync(audioAssets[index])
-      soundRef.current = sound
+    // use centralized audio service to prevent overlapping
+    await audioService.playAsset(audioAssets[index], () => {
+      if (!isMountedRef.current) return
 
-      if (!isMountedRef.current) {
-        await stopAudio()
-        isPlayingRef.current = false
-        return
-      }
-
-      // set up playback status listener
-      sound.setOnPlaybackStatusUpdate((status) => {
-        if (!status.isLoaded) return
-        if (status.didJustFinish) {
-          if (!isMountedRef.current) return
-
-          setIsSpeaking(false)
-          isPlayingRef.current = false
-          stopAudio()
-
-          // fade out subtitle before next message
-          Animated.timing(subtitleFadeAnim, {
-            toValue: 0,
-            duration: 500,
-            useNativeDriver: true
-          }).start()
-
-          // schedule next message
-          messageTimerRef.current = setTimeout(() => {
-            if (isMountedRef.current) {
-              const nextIndex = (index + 1) % CONVINCING_MESSAGES.length
-              playMessage(nextIndex)
-            }
-          }, 6000)
-        }
-      })
-
-      await sound.playAsync()
-    } catch (err) {
-      console.error('Error playing audio:', err)
-      if (isMountedRef.current) {
-        setIsSpeaking(false)
-      }
+      setIsSpeaking(false)
       isPlayingRef.current = false
-      // schedule next message even on error
+
+      // fade out subtitle before next message
+      Animated.timing(subtitleFadeAnim, {
+        toValue: 0,
+        duration: 500,
+        useNativeDriver: true
+      }).start()
+
+      // schedule next message
       messageTimerRef.current = setTimeout(() => {
         if (isMountedRef.current) {
           const nextIndex = (index + 1) % CONVINCING_MESSAGES.length
           playMessage(nextIndex)
         }
-      }, 5000)
-    }
-  }, [visible, subtitleFadeAnim, stopAudio])
+      }, 6000)
+    })
+  }, [visible, subtitleFadeAnim])
 
   // start when visible
   useEffect(() => {
@@ -225,6 +188,11 @@ export const PaymentModal = ({
         useNativeDriver: true
       }).start()
 
+      // fetch SOL price
+      getSOLPriceUSD().then(price => {
+        if (isMountedRef.current) setSolPriceUSD(price)
+      })
+
       const initialDelay = setTimeout(() => {
         if (isMountedRef.current) {
           playMessage(0)
@@ -234,17 +202,17 @@ export const PaymentModal = ({
       return () => {
         clearTimeout(initialDelay)
         clearMessageTimer()
-        stopAudio()
+        audioService.stopAudio()
         isPlayingRef.current = false
         setIsSpeaking(false)
       }
     } else {
       clearMessageTimer()
-      stopAudio()
+      audioService.stopAudio()
       isPlayingRef.current = false
       setIsSpeaking(false)
     }
-  }, [visible, playMessage, clearMessageTimer, stopAudio])
+  }, [visible, playMessage, clearMessageTimer])
 
   // pulse animation for pay button
   useEffect(() => {
@@ -307,7 +275,7 @@ export const PaymentModal = ({
           </Animated.View>
         </View>
 
-        {/* bottom section - payment */}
+        {/* bottom section - payment options */}
         <View style={styles.bottomSection}>
           {error && (
             <View style={styles.errorContainer}>
@@ -318,23 +286,61 @@ export const PaymentModal = ({
             </View>
           )}
 
-          <View style={styles.priceContainer}>
-            <Text style={styles.priceLabel}>Unlock Luna for</Text>
-            <Text style={styles.price}>{PAYMENT_CONFIG.priceInSol} SOL</Text>
-            <Text style={styles.duration}>
-              {PAYMENT_CONFIG.sessionDurationMinutes} minutes of private conversation
-            </Text>
-          </View>
+          <Text style={styles.choosePlanTitle}>Choose Your Plan</Text>
 
-          <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
+          {/* session option */}
+          <TouchableOpacity
+            style={[styles.optionCard, selectedOption === 'session' && styles.optionCardSelected]}
+            onPress={() => setSelectedOption('session')}
+            activeOpacity={0.8}
+          >
+            <View style={styles.optionRadio}>
+              {selectedOption === 'session' && <View style={styles.optionRadioInner} />}
+            </View>
+            <View style={styles.optionContent}>
+              <Text style={styles.optionTitle}>Single Session</Text>
+              <Text style={styles.optionPrice}>{PAYMENT_CONFIG.sessionPriceSOL} SOL</Text>
+              <Text style={styles.optionDesc}>{PAYMENT_CONFIG.sessionDurationMinutes} minutes of conversation</Text>
+              {solPriceUSD && (
+                <Text style={styles.optionUSD}>{formatUSD(PAYMENT_CONFIG.sessionPriceSOL, solPriceUSD)}</Text>
+              )}
+            </View>
+          </TouchableOpacity>
+
+          {/* lifetime option */}
+          <TouchableOpacity
+            style={[styles.optionCard, styles.optionCardLifetime, selectedOption === 'lifetime' && styles.optionCardSelected]}
+            onPress={() => setSelectedOption('lifetime')}
+            activeOpacity={0.8}
+          >
+            <View style={styles.bestValueBadge}>
+              <Text style={styles.bestValueText}>BEST VALUE</Text>
+            </View>
+            <View style={styles.optionRadio}>
+              {selectedOption === 'lifetime' && <View style={styles.optionRadioInner} />}
+            </View>
+            <View style={styles.optionContent}>
+              <Text style={styles.optionTitle}>Lifetime Access</Text>
+              <Text style={styles.optionPrice}>{PAYMENT_CONFIG.lifetimePriceSOL} SOL</Text>
+              <Text style={styles.optionDesc}>Luna forever - unlimited conversations</Text>
+              {solPriceUSD && (
+                <Text style={styles.optionUSD}>{formatUSD(PAYMENT_CONFIG.lifetimePriceSOL, solPriceUSD)}</Text>
+              )}
+              <Text style={styles.optionSavings}>
+                50 sessions = {(PAYMENT_CONFIG.sessionPriceSOL * 50).toFixed(2)} SOL. Get UNLIMITED instead!
+              </Text>
+            </View>
+          </TouchableOpacity>
+
+          <Animated.View style={{ transform: [{ scale: pulseAnim }], width: '100%', alignItems: 'center' }}>
             <TouchableOpacity
               style={[styles.payButton, isLoading && styles.payButtonDisabled]}
-              onPress={onPay}
+              onPress={() => onPay(selectedOption)}
               disabled={isLoading}
               activeOpacity={0.8}
             >
               <Text style={styles.payButtonText}>
-                {isLoading ? 'Connecting...' : 'Connect Wallet & Unlock'}
+                {isLoading ? 'Connecting...' : `Pay ${selectedOption === 'lifetime' ? PAYMENT_CONFIG.lifetimePriceSOL : PAYMENT_CONFIG.sessionPriceSOL} SOL`}
               </Text>
             </TouchableOpacity>
           </Animated.View>
@@ -342,6 +348,23 @@ export const PaymentModal = ({
           <Text style={styles.footer}>
             Powered by Solana
           </Text>
+
+          <TouchableOpacity
+            onPress={() => Linking.openURL('https://t.me/lunaaiseeker')}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.supportLink}>Need help? Join our Telegram</Text>
+          </TouchableOpacity>
+
+          {DEV_MODE && onDevBypass && (
+            <TouchableOpacity
+              style={styles.devBypassButton}
+              onPress={onDevBypass}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.devBypassText}>[DEV] Skip Payment</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
     </Animated.View>
@@ -428,7 +451,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 100, 100, 0.2)',
     padding: 16,
     borderRadius: 16,
-    marginBottom: 20,
+    marginBottom: 16,
     width: '100%'
   },
   errorText: {
@@ -443,27 +466,90 @@ const styles = StyleSheet.create({
     marginTop: 8,
     fontWeight: '600'
   },
-  priceContainer: {
-    alignItems: 'center',
-    marginBottom: 28
+  choosePlanTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#fff',
+    marginBottom: 16
   },
-  priceLabel: {
-    fontSize: 15,
-    color: 'rgba(255, 255, 255, 0.6)',
+  optionCard: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 12,
+    width: '100%',
+    borderWidth: 2,
+    borderColor: 'transparent'
+  },
+  optionCardSelected: {
+    borderColor: '#ff69b4',
+    backgroundColor: 'rgba(255, 105, 180, 0.15)'
+  },
+  optionCardLifetime: {
+    position: 'relative',
+    overflow: 'visible'
+  },
+  bestValueBadge: {
+    position: 'absolute',
+    top: -10,
+    right: 16,
+    backgroundColor: '#ff69b4',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8
+  },
+  bestValueText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '800'
+  },
+  optionRadio: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#ff69b4',
+    marginRight: 14,
+    marginTop: 4,
+    justifyContent: 'center',
+    alignItems: 'center'
+  },
+  optionRadioInner: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#ff69b4'
+  },
+  optionContent: {
+    flex: 1
+  },
+  optionTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
     marginBottom: 4
   },
-  price: {
-    fontSize: 60,
+  optionPrice: {
+    fontSize: 28,
     fontWeight: '800',
-    color: '#fff',
-    textShadowColor: 'rgba(255, 105, 180, 0.5)',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 15
+    color: '#ff69b4'
   },
-  duration: {
-    fontSize: 15,
+  optionDesc: {
+    fontSize: 13,
     color: 'rgba(255, 255, 255, 0.6)',
-    marginTop: 6
+    marginTop: 2
+  },
+  optionUSD: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.4)',
+    marginTop: 2
+  },
+  optionSavings: {
+    fontSize: 12,
+    color: '#4ade80',
+    marginTop: 6,
+    fontWeight: '600'
   },
   payButton: {
     backgroundColor: '#ff69b4',
@@ -490,5 +576,25 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: 'rgba(255, 255, 255, 0.4)',
     marginTop: 24
+  },
+  supportLink: {
+    fontSize: 13,
+    color: '#4ade80',
+    marginTop: 12,
+    textDecorationLine: 'underline'
+  },
+  devBypassButton: {
+    marginTop: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    backgroundColor: 'rgba(255, 100, 100, 0.3)',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ff6b6b'
+  },
+  devBypassText: {
+    fontSize: 12,
+    color: '#ff6b6b',
+    fontWeight: '600'
   }
 })

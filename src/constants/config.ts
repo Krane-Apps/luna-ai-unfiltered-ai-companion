@@ -31,8 +31,9 @@ export const TTS_MODEL = 'hexgrad/Kokoro-82M'
 
 // payment configuration
 export const PAYMENT_CONFIG: PaymentConfig = {
-  priceInSol: 0.01, // cost per session
-  sessionDurationMinutes: 15, // session length after payment
+  sessionPriceSOL: 0.01, // cost per session
+  sessionDurationMinutes: 30, // session length after payment
+  lifetimePriceSOL: 0.5, // one-time lifetime access
   treasuryWallet: getTreasuryWallet()
 }
 
@@ -42,3 +43,8 @@ export const SOLANA_CLUSTER = 'mainnet-beta'
 
 // grace period when transaction fails (in minutes)
 export const GRACE_PERIOD_MINUTES = 15
+
+// dev mode - shows bypass button on payment screen
+// set to true for testing, false for production release
+// this works in both debug AND release builds
+export const DEV_MODE = false // <-- change to false before publishing to store

@@ -12,18 +12,21 @@ import {
   Platform,
   StatusBar,
   Animated,
-  ScrollView
+  ScrollView,
+  Linking
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useVideoPlayer, VideoView } from 'expo-video'
-import { PaymentModal } from '../components/PaymentModal'
+import { PaymentModal, PaymentOption } from '../components/PaymentModal'
 import { SessionTimer } from '../components/SessionTimer'
-import { generateChatResponse, clearChatHistory } from '../services/chat'
+import { OnboardingScreen } from './OnboardingScreen'
+import { generateChatResponse, clearChatHistory, loadChatHistory, initializeChatWithProfile } from '../services/chat'
 import { generateSpeech } from '../services/tts'
 import { audioService } from '../services/audio'
-import { initiatePayment, getSessionState, endSession, loadSessionFromStorage } from '../services/payment'
+import { initiatePayment, initiateLifetimePayment, getSessionState, endSession, loadSessionFromStorage } from '../services/payment'
+import { loadUserProfile, getUserProfile, grantLifetimeAccess, hasLifetimeAccess, hasCompletedOnboarding } from '../services/profile'
 import { WELCOME_MESSAGE } from '../constants/prompts'
-import { AvatarState } from '../types'
+import { AvatarState, UserProfile } from '../types'
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window')
 
@@ -49,10 +52,12 @@ export const ChatScreen = () => {
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [isSpeaking, setIsSpeaking] = useState(false)
-  const [showPayment, setShowPayment] = useState(true)
+  const [showPayment, setShowPayment] = useState(false)
+  const [showOnboarding, setShowOnboarding] = useState(true)
   const [paymentLoading, setPaymentLoading] = useState(false)
   const [paymentError, setPaymentError] = useState<string>()
   const [hasActiveSession, setHasActiveSession] = useState(false)
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
   const [currentSubtitle, setCurrentSubtitle] = useState('')
   const [showSubtitleBox, setShowSubtitleBox] = useState(false)
   const [avatarState, setAvatarState] = useState<AvatarState>('listening')
@@ -149,8 +154,33 @@ export const ChatScreen = () => {
   useEffect(() => {
     const init = async () => {
       audioService.initialize()
+
+      // load user profile first
+      const profile = await loadUserProfile()
+      setUserProfile(profile)
+
+      // initialize chat with personalized prompt if profile exists
+      initializeChatWithProfile(profile)
+
       await loadSessionFromStorage()
-      checkSession()
+      await loadChatHistory()
+
+      // NEW FLOW: onboarding first, then payment
+      // check if onboarding is completed
+      if (!profile?.hasCompletedOnboarding) {
+        // show onboarding first (default state)
+        setShowOnboarding(true)
+        setShowPayment(false)
+      } else {
+        // onboarding done, check payment/access
+        setShowOnboarding(false)
+        if (profile?.hasLifetimeAccess) {
+          setShowPayment(false)
+          setHasActiveSession(true)
+        } else {
+          checkSession()
+        }
+      }
     }
     init()
   }, [])
@@ -200,17 +230,26 @@ export const ChatScreen = () => {
     setShowPayment(!session.isActive)
   }
 
-  const handlePayment = async () => {
+  const handlePayment = async (option: PaymentOption) => {
     setPaymentLoading(true)
     setPaymentError(undefined)
 
-    const result = await initiatePayment()
+    // choose payment method based on option
+    const result = option === 'lifetime'
+      ? await initiateLifetimePayment()
+      : await initiatePayment()
 
     setPaymentLoading(false)
 
     if (result.success) {
+      // grant lifetime access if that option was selected
+      if (option === 'lifetime') {
+        await grantLifetimeAccess()
+      }
+
       setShowPayment(false)
       setHasActiveSession(true)
+      // onboarding is already done (new flow), go to chat
       startConversation()
     } else {
       setPaymentError(result.error)
@@ -219,6 +258,7 @@ export const ChatScreen = () => {
         setHasActiveSession(true)
         setTimeout(() => {
           setShowPayment(false)
+          // onboarding is already done (new flow), go to chat
           startConversation()
         }, 2000)
       }
@@ -256,10 +296,16 @@ export const ChatScreen = () => {
   }
 
   const startConversation = async () => {
-    prepareSubtitle(WELCOME_MESSAGE)
+    // personalize welcome message if we have user's name
+    const profile = getUserProfile()
+    const welcomeMsg = profile?.userName
+      ? `Hey ${profile.userName}! ${WELCOME_MESSAGE}`
+      : WELCOME_MESSAGE
+
+    prepareSubtitle(welcomeMsg)
     // don't set speaking yet - wait for audio to be ready
 
-    const audioUrl = await generateSpeech(WELCOME_MESSAGE)
+    const audioUrl = await generateSpeech(welcomeMsg)
     if (audioUrl && isMountedRef.current) {
       // pick speaking video and start speaking only when audio is ready
       speakingVideoRef.current = getRandomSpeakingVideo()
@@ -280,11 +326,14 @@ export const ChatScreen = () => {
     }
   }
 
-  const handleSessionExpired = useCallback(() => {
+  const handleSessionExpired = useCallback(async () => {
+    // lifetime users don't expire
+    if (hasLifetimeAccess()) return
+
     endSession()
     setHasActiveSession(false)
     setShowPayment(true)
-    clearChatHistory()
+    await clearChatHistory()
     setCurrentSubtitle('')
   }, [])
 
@@ -294,6 +343,34 @@ export const ChatScreen = () => {
     setIsSpeaking(false)
     hideSubtitle()
   }, [])
+
+  // handle onboarding completion - now shows payment after onboarding
+  const handleOnboardingComplete = async () => {
+    // reload profile to get updated data
+    const profile = await loadUserProfile()
+    setUserProfile(profile)
+    // reinitialize chat with personalized prompt
+    initializeChatWithProfile(profile)
+    setShowOnboarding(false)
+
+    // NEW FLOW: after onboarding, check if payment needed
+    if (profile?.hasLifetimeAccess) {
+      setShowPayment(false)
+      setHasActiveSession(true)
+      startConversation()
+    } else {
+      // check session state
+      const session = getSessionState()
+      if (session.isActive) {
+        setHasActiveSession(true)
+        setShowPayment(false)
+        startConversation()
+      } else {
+        // no active session, show payment
+        setShowPayment(true)
+      }
+    }
+  }
 
   const sendMessage = async () => {
     // if luna is speaking, stop her first
@@ -340,7 +417,26 @@ export const ChatScreen = () => {
     }
   }
 
-  // show payment screen if no active session
+  // dev mode bypass - grants lifetime access (persists to storage)
+  const handleDevBypass = async () => {
+    await grantLifetimeAccess()
+    setShowPayment(false)
+    setShowOnboarding(false)
+    setHasActiveSession(true)
+    startConversation()
+  }
+
+  // NEW FLOW: show onboarding first (before payment)
+  if (showOnboarding) {
+    return (
+      <>
+        <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
+        <OnboardingScreen onComplete={handleOnboardingComplete} />
+      </>
+    )
+  }
+
+  // show payment screen after onboarding if no active session
   if (showPayment) {
     return (
       <>
@@ -350,6 +446,7 @@ export const ChatScreen = () => {
           isLoading={paymentLoading}
           onPay={handlePayment}
           onClose={() => {}}
+          onDevBypass={handleDevBypass}
           error={paymentError}
         />
       </>
@@ -376,9 +473,17 @@ export const ChatScreen = () => {
       {/* header */}
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
         <Text style={styles.headerTitle}>Luna</Text>
-        {hasActiveSession && (
-          <SessionTimer onSessionExpired={handleSessionExpired} />
-        )}
+        <View style={styles.headerRight}>
+          {hasActiveSession && !hasLifetimeAccess() && (
+            <SessionTimer onSessionExpired={handleSessionExpired} />
+          )}
+          <TouchableOpacity
+            style={styles.helpButton}
+            onPress={() => Linking.openURL('https://t.me/lunaaiseeker')}
+          >
+            <Text style={styles.helpButtonText}>?</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* subtitle area - smaller box, scrollable, moves up when keyboard visible */}
@@ -484,9 +589,27 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 0 },
     textShadowRadius: 10
   },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12
+  },
+  helpButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center'
+  },
+  helpButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600'
+  },
   subtitleContainer: {
     position: 'absolute',
-    bottom: 100,
+    bottom: 140,
     left: 16,
     right: 16,
     maxHeight: 100,
@@ -510,7 +633,7 @@ const styles = StyleSheet.create({
   },
   loadingContainer: {
     position: 'absolute',
-    bottom: 100,
+    bottom: 140,
     left: 16,
     right: 16,
     backgroundColor: 'rgba(0, 0, 0, 0.6)',

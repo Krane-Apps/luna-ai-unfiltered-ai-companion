@@ -55,8 +55,8 @@ export const initiatePayment = async (): Promise<{ success: boolean; signature?:
   console.log('RPC URL:', SOLANA_RPC_URL)
   console.log('Cluster:', SOLANA_CLUSTER)
   console.log('Treasury Wallet:', PAYMENT_CONFIG.treasuryWallet)
-  console.log('Price in SOL:', PAYMENT_CONFIG.priceInSol)
-  console.log('Price in Lamports:', Math.floor(PAYMENT_CONFIG.priceInSol * LAMPORTS_PER_SOL))
+  console.log('Price in SOL:', PAYMENT_CONFIG.sessionPriceSOL)
+  console.log('Price in Lamports:', Math.floor(PAYMENT_CONFIG.sessionPriceSOL * LAMPORTS_PER_SOL))
 
   try {
     console.log('Starting wallet transaction...')
@@ -97,12 +97,12 @@ export const initiatePayment = async (): Promise<{ success: boolean; signature?:
       console.log('User balance (lamports):', balance)
       console.log('User balance (SOL):', balance / LAMPORTS_PER_SOL)
 
-      const lamports = Math.floor(PAYMENT_CONFIG.priceInSol * LAMPORTS_PER_SOL)
+      const lamports = Math.floor(PAYMENT_CONFIG.sessionPriceSOL * LAMPORTS_PER_SOL)
       console.log('Required lamports:', lamports)
 
       if (balance < lamports) {
         console.log('INSUFFICIENT BALANCE!')
-        throw new Error(`Insufficient balance. Have ${balance / LAMPORTS_PER_SOL} SOL, need ${PAYMENT_CONFIG.priceInSol} SOL`)
+        throw new Error(`Insufficient balance. Have ${balance / LAMPORTS_PER_SOL} SOL, need ${PAYMENT_CONFIG.sessionPriceSOL} SOL`)
       }
 
       // create transfer transaction
@@ -228,6 +228,111 @@ export const initiatePayment = async (): Promise<{ success: boolean; signature?:
       success: false,
       error: errorMessage
     }
+  }
+}
+
+// lifetime payment - same flow but different amount
+export const initiateLifetimePayment = async (): Promise<{ success: boolean; signature?: string; error?: string }> => {
+  console.log('=== LIFETIME PAYMENT INITIATED ===')
+  console.log('Lifetime Price in SOL:', PAYMENT_CONFIG.lifetimePriceSOL)
+  console.log('Lifetime Price in Lamports:', Math.floor(PAYMENT_CONFIG.lifetimePriceSOL * LAMPORTS_PER_SOL))
+
+  try {
+    const result = await transact(async (wallet: Web3MobileWallet) => {
+      const authResult = await wallet.authorize({
+        cluster: SOLANA_CLUSTER,
+        identity: APP_IDENTITY
+      })
+
+      if (!authResult.accounts || authResult.accounts.length === 0) {
+        throw new Error('No accounts returned from wallet authorization')
+      }
+
+      const userAddress = authResult.accounts[0].address
+      const publicKey = decodeAddress(userAddress)
+      console.log('User PublicKey:', publicKey.toBase58())
+
+      const connection = getConnection()
+      const balance = await connection.getBalance(publicKey)
+      console.log('User balance (SOL):', balance / LAMPORTS_PER_SOL)
+
+      const lamports = Math.floor(PAYMENT_CONFIG.lifetimePriceSOL * LAMPORTS_PER_SOL)
+
+      if (balance < lamports) {
+        throw new Error(`Insufficient balance. Have ${balance / LAMPORTS_PER_SOL} SOL, need ${PAYMENT_CONFIG.lifetimePriceSOL} SOL`)
+      }
+
+      const treasuryPubkey = new PublicKey(PAYMENT_CONFIG.treasuryWallet)
+      const transaction = new Transaction().add(
+        SystemProgram.transfer({
+          fromPubkey: publicKey,
+          toPubkey: treasuryPubkey,
+          lamports
+        })
+      )
+
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash()
+      transaction.recentBlockhash = blockhash
+      transaction.feePayer = publicKey
+
+      const signedTxs = await wallet.signTransactions({
+        transactions: [transaction]
+      })
+
+      if (!signedTxs || signedTxs.length === 0) {
+        throw new Error('No signed transaction returned from wallet')
+      }
+
+      return { signedTransaction: signedTxs[0], blockhash, lastValidBlockHeight }
+    })
+
+    // send transaction with retry
+    await new Promise(resolve => setTimeout(resolve, 1000))
+
+    const connection = getConnection()
+    const rawTransaction = result.signedTransaction.serialize()
+
+    let signature: string | null = null
+    let lastError: Error | null = null
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        signature = await connection.sendRawTransaction(rawTransaction, {
+          skipPreflight: true,
+          maxRetries: 2
+        })
+        console.log('Lifetime transaction sent:', signature)
+        break
+      } catch (err: unknown) {
+        lastError = err as Error
+        if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 1000))
+      }
+    }
+
+    if (!signature) {
+      throw lastError || new Error('Failed to send transaction after 3 attempts')
+    }
+
+    const confirmation = await connection.confirmTransaction(
+      {
+        signature,
+        blockhash: result.blockhash,
+        lastValidBlockHeight: result.lastValidBlockHeight
+      },
+      'confirmed'
+    )
+
+    if (confirmation.value.err) {
+      throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`)
+    }
+
+    console.log('Lifetime payment confirmed!')
+    // note: caller should grant lifetime access via profile service
+    return { success: true, signature }
+  } catch (error: unknown) {
+    console.log('=== LIFETIME PAYMENT ERROR ===', error)
+    const errorMessage = error instanceof Error ? error.message : 'Payment failed'
+    return { success: false, error: errorMessage }
   }
 }
 

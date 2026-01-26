@@ -1,6 +1,6 @@
 publisher:
   name: Ritik Lakhwani
-  website: https://kraneapps.com
+  website: https://www.kraneapps.com
   email: ritiklakhwani28@gmail.com
   support_email: ritiklakhwani28@gmail.com
 app:
@@ -8,10 +8,10 @@ app:
   address: 5wYMXTjyZRCfcMwCQWyS8fw1yofA3jBtPJw7CZZMY7wL
   android_package: com.lunaai.app
   urls:
-    license_url: https://kraneapps.com/lunaai/license
-    copyright_url: https://kraneapps.com/lunaai/copyright
-    privacy_policy_url: https://kraneapps.com/lunaai/privacy
-    website: https://kraneapps.com
+    license_url: https://www.kraneapps.com/lunaai/license
+    copyright_url: https://www.kraneapps.com/lunaai/copyright
+    privacy_policy_url: https://www.kraneapps.com/lunaai/privacy 
+    website: https://www.kraneapps.com
   media:
     - purpose: icon
       uri: media/play_store_512.png
