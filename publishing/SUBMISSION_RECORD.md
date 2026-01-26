@@ -1,7 +1,7 @@
 # Luna AI - Solana dApp Store Submission Record
 
 ## Submission Date
-**January 18, 2025**
+**January 26, 2025** (Latest: v1.0.2)
 
 ## App Information
 
@@ -9,8 +9,8 @@
 |-------|-------|
 | App Name | Luna AI |
 | Package Name | com.lunaai.app |
-| Version | 1.0.1 |
-| Version Code | 2 |
+| Version | 1.0.2 |
+| Version Code | 3 |
 | Min SDK | 24 |
 
 ## Publisher Information
@@ -28,7 +28,11 @@
 - **Address:** `5wYMXTjyZRCfcMwCQWyS8fw1yofA3jBtPJw7CZZMY7wL`
 - **Explorer:** https://explorer.solana.com/address/5wYMXTjyZRCfcMwCQWyS8fw1yofA3jBtPJw7CZZMY7wL?cluster=mainnet
 
-### Release NFT (Current: v1.0.1)
+### Release NFT (Current: v1.0.2)
+- **Address:** `BLGBA9TGheccn1drAbWD38YNfyeFMxw4QEMW2cypX9Ku`
+- **Explorer:** https://explorer.solana.com/address/BLGBA9TGheccn1drAbWD38YNfyeFMxw4QEMW2cypX9Ku?cluster=mainnet
+
+### Release NFT (v1.0.1 - Previous)
 - **Address:** `9kL2qGp8CNvnmJmWT3UU94CnJrge3oBK8XTeTiyrjmW`
 - **Explorer:** https://explorer.solana.com/address/9kL2qGp8CNvnmJmWT3UU94CnJrge3oBK8XTeTiyrjmW?cluster=mainnet
 
@@ -39,7 +43,15 @@
 ### Publisher Wallet
 - **Address:** `6Z8ZcGhDpQBrgEyMVUxu9vWTaNb6nXirbEf5ZgkbkYnt`
 
-## APK Details (Current: v1.0.1)
+## APK Details (Current: v1.0.2)
+
+| Field | Value |
+|-------|-------|
+| File | luna-ai-v1.0.2-signed.apk |
+| APK Hash | 3ND5W5aG/AOyhogYZNcqf5RikT+qik2nhjTgtV6SUS4= |
+| Cert Fingerprint | fac61745dc0903786fb9ede62a962b399f7348f0bb6f899b8332667591033b9c |
+
+## APK Details (v1.0.1 - Previous)
 
 | Field | Value |
 |-------|-------|
@@ -57,7 +69,10 @@
 
 ## Arweave URLs
 
-### APK (v1.0.1 - Current)
+### APK (v1.0.2 - Current)
+https://arweave.net/0UwT7vV4oAGbwHrO9n06qT6IFNweLCTz4LLCprYNTKA
+
+### APK (v1.0.1 - Previous)
 https://arweave.net/3whadyzl3T98wEOcHyZrZHvYhofW1Lx40eGHrWQpxoA
 
 ### APK (v1.0.0 - Previous)
@@ -102,6 +117,9 @@ Built for users who want an authentic AI experience. Pay with SOL for 30-minute 
 
 Age restriction: 18+
 
+**What's New (v1.0.2):**
+Added lifetime access option, improved conversation quality with better response length, fixed audio overlapping issues, centralized audio management
+
 **What's New (v1.0.1):**
 Fixed keyboard hiding text input on Android, improved video transitions, updated treasury wallet
 
@@ -114,32 +132,36 @@ Optimized for Solana Mobile devices with native wallet integration
 ## Testing Instructions
 
 1. Install the APK on your Solana Mobile device
-2. Open Luna AI - you'll see the payment screen
-3. Connect your wallet (Phantom or other Solana wallet)
-4. Pay 0.01 SOL to start a 30-minute session
-5. Chat with Luna using the text input
-6. Luna responds with voice and video avatar
+2. Open Luna AI - you'll see the onboarding screen first
+3. Complete onboarding (privacy, name, age, preferences)
+4. After onboarding, payment screen appears
+5. Connect your wallet (Phantom or other Solana wallet)
+6. Choose session (0.01 SOL for 30 min) or lifetime (0.5 SOL)
+7. Chat with Luna using the text input
+8. Luna responds with voice and video avatar
 
 Note: Requires internet connection and a Solana wallet with SOL for payments.
 
 ## Review Status
 
-- **Latest Update Submitted:** January 18, 2025 (v1.0.1)
+- **Latest Update Submitted:** January 26, 2025 (v1.0.2)
+- **Previous Update:** January 18, 2025 (v1.0.1)
 - **Initial Submission:** January 18, 2025 (v1.0.0)
-- **Status:** Update Published
-- **Estimated Review Time:** 3-4 business days
+- **Status:** Pending Review
+- **Estimated Review Time:** 1-2 business days
 
 ## Next Steps
 
 1. Join the [Solana Mobile Discord](https://discord.gg/solanamobile)
 2. Get the developer role in the #developer channel
 3. Leave a message in the #dapp-store channel that you've submitted for review
-4. Wait for review (3-4 business days)
+4. Wait for review (1-2 business days)
 
 ## Version History
 
 | Version | Version Code | Date | Status | Notes |
 |---------|--------------|------|--------|-------|
+| 1.0.2 | 3 | 2025-01-26 | Pending Review | Lifetime access, better responses, audio fixes |
 | 1.0.1 | 2 | 2025-01-18 | Published | Fixed keyboard, video transitions, treasury wallet |
 | 1.0.0 | 1 | 2025-01-18 | Published | Initial release |
 
