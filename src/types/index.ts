@@ -11,6 +11,8 @@ export interface Message {
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
+  imageUri?: string // local uri for display
+  imageBase64?: string // base64 encoded image for ai analysis
 }
 
 export interface SessionState {
@@ -20,9 +22,9 @@ export interface SessionState {
 }
 
 export interface PaymentConfig {
-  sessionPriceSOL: number
-  sessionDurationMinutes: number
-  lifetimePriceSOL: number
+  singleChatPriceSOL: number // 30 min session
+  lifetimePriceSOL: number // lifetime access (best value)
+  sessionDurationMinutes: number // for single chat
   treasuryWallet: string
 }
 
@@ -35,6 +37,8 @@ export interface UserProfile {
   relationshipStatus?: string
   preferredTime?: string
   boundaries?: string
+  timezone: string // e.g., "America/New_York" for good morning/night messages
+  twitterShareUrl?: string // if user shared on twitter for free lifetime
   hasCompletedOnboarding: boolean
   hasLifetimeAccess: boolean
   createdAt: number
@@ -44,3 +48,36 @@ export type AvatarMood = 'neutral' | 'happy' | 'thinking' | 'flirty' | 'speaking
 
 // avatar states matching the mp4 assets
 export type AvatarState = 'speaking' | 'thinking' | 'listening'
+
+// backend api types
+export interface BackendUser {
+  id: string
+  device_token: string | null
+  timezone: string
+  profile: UserProfile | null
+  wallet_address: string | null
+  has_lifetime_access: boolean
+  twitter_share_url: string | null
+  created_at: string
+  last_active: string
+}
+
+export interface BackendMessage {
+  id: string
+  user_id: string
+  role: 'user' | 'assistant'
+  content: string
+  created_at: string
+}
+
+export interface RegisterUserRequest {
+  timezone: string
+  deviceToken?: string
+  profile?: Partial<UserProfile>
+  walletAddress?: string
+}
+
+export interface SyncMessagesResponse {
+  messages: BackendMessage[]
+  hasMore: boolean
+}

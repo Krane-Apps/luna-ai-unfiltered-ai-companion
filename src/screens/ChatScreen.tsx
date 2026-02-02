@@ -1,715 +1,973 @@
-// main chat screen with full screen video and voice interaction
+// chat screen with chatgpt-style message interface
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback } from "react";
 import {
   View,
   TextInput,
   TouchableOpacity,
   Text,
   StyleSheet,
-  Dimensions,
   Keyboard,
   Platform,
   StatusBar,
-  Animated,
-  ScrollView,
-  Linking
-} from 'react-native'
-import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { useVideoPlayer, VideoView } from 'expo-video'
-import { PaymentModal, PaymentOption } from '../components/PaymentModal'
-import { SessionTimer } from '../components/SessionTimer'
-import { OnboardingScreen } from './OnboardingScreen'
-import { generateChatResponse, clearChatHistory, loadChatHistory, initializeChatWithProfile } from '../services/chat'
-import { generateSpeech } from '../services/tts'
-import { audioService } from '../services/audio'
-import { initiatePayment, initiateLifetimePayment, getSessionState, endSession, loadSessionFromStorage } from '../services/payment'
-import { loadUserProfile, getUserProfile, grantLifetimeAccess, hasLifetimeAccess, hasCompletedOnboarding } from '../services/profile'
-import { WELCOME_MESSAGE } from '../constants/prompts'
-import { AvatarState, UserProfile } from '../types'
+  FlatList,
+  KeyboardAvoidingView,
+  Alert,
+  Image,
+  Linking,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Audio } from "expo-av";
+import * as ImagePicker from "expo-image-picker";
+import { Ionicons } from "@expo/vector-icons";
+import { PaymentModal, PaymentOption } from "../components/PaymentModal";
+import { SessionTimer } from "../components/SessionTimer";
+import { TwitterShareBanner } from "../components/TwitterShareBanner";
+import { RefundBottomSheet } from "../components/RefundBottomSheet";
+import { OnboardingScreen } from "./OnboardingScreen";
+import { SettingsScreen } from "./SettingsScreen";
+import {
+  generateChatResponse,
+  generateChatResponseWithImage,
+  clearChatHistory,
+  loadChatHistory,
+  initializeChatWithProfile,
+  getChatHistory,
+  loadMessagesFromFirestore,
+} from "../services/chat";
+import {
+  initiatePayment,
+  initiateLifetimePayment,
+  getSessionState,
+  endSession,
+  loadSessionFromStorage,
+  connectWallet,
+} from "../services/payment";
+import {
+  loadUserProfile,
+  getUserProfile,
+  grantLifetimeAccess,
+  hasLifetimeAccess,
+  initializeBackend,
+  restoreSubscriptionFromFirestore,
+  clearUserProfile,
+} from "../services/profile";
+import { WELCOME_MESSAGE } from "../constants/prompts";
+import { UserProfile } from "../types";
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window')
+// TODO: add a proper short notification sound (message-received.mp3)
+// For now, sound is disabled - add the file to enable it
 
-// video assets - use stable references
-const speakingVideos = [
-  require('../assets/luna-speaking-1.mp4'),
-  require('../assets/luna-speaking-2.mp4'),
-  require('../assets/luna-speaking-3.mp4')
-]
-
-const videoAssets = {
-  thinking: require('../assets/luna-thinking.mp4'),
-  listening: require('../assets/luna-listening.mp4')
-}
-
-// get random speaking video
-const getRandomSpeakingVideo = () => {
-  const index = Math.floor(Math.random() * speakingVideos.length)
-  return speakingVideos[index]
+interface DisplayMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: Date;
+  imageUri?: string;
 }
 
 export const ChatScreen = () => {
-  const [input, setInput] = useState('')
-  const [isLoading, setIsLoading] = useState(false)
-  const [isSpeaking, setIsSpeaking] = useState(false)
-  const [showPayment, setShowPayment] = useState(false)
-  const [showOnboarding, setShowOnboarding] = useState(true)
-  const [paymentLoading, setPaymentLoading] = useState(false)
-  const [paymentError, setPaymentError] = useState<string>()
-  const [hasActiveSession, setHasActiveSession] = useState(false)
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
-  const [currentSubtitle, setCurrentSubtitle] = useState('')
-  const [showSubtitleBox, setShowSubtitleBox] = useState(false)
-  const [avatarState, setAvatarState] = useState<AvatarState>('listening')
-  const pendingSubtitleRef = useRef<string>('')
+  const [input, setInput] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [showPayment, setShowPayment] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(true);
+  const [paymentLoading, setPaymentLoading] = useState(false);
+  const [paymentError, setPaymentError] = useState<string>();
+  const [hasActiveSession, setHasActiveSession] = useState(false);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showRefundSheet, setShowRefundSheet] = useState(false);
+  const [messages, setMessages] = useState<DisplayMessage[]>([]);
+  const [isTyping, setIsTyping] = useState(false);
+  const [isRestoringSubscription, setIsRestoringSubscription] = useState(false);
 
-  const subtitleFadeAnim = useRef(new Animated.Value(0)).current
-  const [keyboardVisible, setKeyboardVisible] = useState(false)
-  const keyboardHeight = useRef(new Animated.Value(0)).current
-  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const isMountedRef = useRef(true)
-  const speakingVideoRef = useRef(getRandomSpeakingVideo())
-  const lastVideoSourceRef = useRef(videoAssets.listening)
-  const insets = useSafeAreaInsets()
-
-  // single video player - use replace() method to change source instead of recreating
-  const player = useVideoPlayer(videoAssets.listening, (p) => {
-    p.loop = true
-    p.muted = true
-    p.play()
-  })
-
-  // change video source using replace() method - no player recreation
-  useEffect(() => {
-    if (!player) return
-
-    let newSource
-    if (avatarState === 'speaking') {
-      newSource = speakingVideoRef.current
-    } else {
-      newSource = videoAssets[avatarState]
-    }
-
-    // only replace if source actually changed
-    if (newSource !== lastVideoSourceRef.current) {
-      lastVideoSourceRef.current = newSource
-      try {
-        player.replace(newSource)
-        player.loop = true
-        player.muted = true
-        player.play()
-      } catch (e) {
-        // ignore errors during video transition
-        console.log('video replace error:', e)
-      }
-    }
-  }, [avatarState, player])
-
-  // ensure player keeps playing
-  useEffect(() => {
-    if (player) {
-      player.loop = true
-      player.muted = true
-      player.play()
-    }
-  }, [player])
+  const flatListRef = useRef<FlatList>(null);
+  const soundRef = useRef<Audio.Sound | null>(null);
+  const isMountedRef = useRef(true);
+  const insets = useSafeAreaInsets();
 
   // track mounted state for cleanup
   useEffect(() => {
-    isMountedRef.current = true
+    isMountedRef.current = true;
     return () => {
-      isMountedRef.current = false
+      isMountedRef.current = false;
+      // cleanup sound
+      if (soundRef.current) {
+        soundRef.current.unloadAsync();
+      }
+    };
+  }, []);
+
+  // load sound on mount (disabled until proper sound file is added)
+  // useEffect(() => {
+  //   const loadSound = async () => {
+  //     try {
+  //       const { sound } = await Audio.Sound.createAsync(MESSAGE_SOUND)
+  //       soundRef.current = sound
+  //     } catch (error) {
+  //       console.warn('failed to load message sound:', error)
+  //     }
+  //   }
+  //   loadSound()
+  // }, [])
+
+  // play notification sound
+  const playMessageSound = async () => {
+    try {
+      if (soundRef.current) {
+        await soundRef.current.replayAsync();
+      }
+    } catch (error) {
+      console.warn("failed to play message sound:", error);
     }
-  }, [])
-
-  // keyboard handling for android - animate input position based on keyboard height
-  useEffect(() => {
-    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow'
-    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide'
-
-    const showSub = Keyboard.addListener(showEvent, (e) => {
-      setKeyboardVisible(true)
-      Animated.timing(keyboardHeight, {
-        toValue: e.endCoordinates.height,
-        duration: Platform.OS === 'ios' ? 250 : 100,
-        useNativeDriver: false
-      }).start()
-    })
-
-    const hideSub = Keyboard.addListener(hideEvent, () => {
-      setKeyboardVisible(false)
-      Animated.timing(keyboardHeight, {
-        toValue: 0,
-        duration: Platform.OS === 'ios' ? 250 : 100,
-        useNativeDriver: false
-      }).start()
-    })
-
-    return () => {
-      showSub.remove()
-      hideSub.remove()
-    }
-  }, [keyboardHeight])
+  };
 
   useEffect(() => {
     const init = async () => {
-      audioService.initialize()
-
       // load user profile first
-      const profile = await loadUserProfile()
-      setUserProfile(profile)
+      const profile = await loadUserProfile();
+      setUserProfile(profile);
 
       // initialize chat with personalized prompt if profile exists
-      initializeChatWithProfile(profile)
+      initializeChatWithProfile(profile);
 
-      await loadSessionFromStorage()
-      await loadChatHistory()
+      await loadSessionFromStorage();
+      await loadChatHistory();
 
-      // NEW FLOW: onboarding first, then payment
+      // load existing messages into display
+      const history = getChatHistory();
+      const displayMessages: DisplayMessage[] = history
+        .filter((m) => m.role !== "system")
+        .map((m, index) => ({
+          id: `${index}-${Date.now()}`,
+          role: m.role as "user" | "assistant",
+          content: m.content,
+          timestamp: new Date(),
+          imageUri: m.imageUri,
+        }));
+      setMessages(displayMessages);
+
+      // note: backend is initialized after payment with wallet address
+
       // check if onboarding is completed
       if (!profile?.hasCompletedOnboarding) {
-        // show onboarding first (default state)
-        setShowOnboarding(true)
-        setShowPayment(false)
+        setShowOnboarding(true);
+        setShowPayment(false);
       } else {
-        // onboarding done, check payment/access
-        setShowOnboarding(false)
+        setShowOnboarding(false);
         if (profile?.hasLifetimeAccess) {
-          setShowPayment(false)
-          setHasActiveSession(true)
+          setShowPayment(false);
+          setHasActiveSession(true);
         } else {
-          checkSession()
+          checkSession();
         }
       }
-    }
-    init()
-  }, [])
-
-  // handle avatar state - video is already selected before setIsSpeaking is called
-  useEffect(() => {
-    if (isSpeaking) {
-      setAvatarState('speaking')
-      clearIdleTimer()
-    } else if (isLoading) {
-      setAvatarState('thinking')
-      clearIdleTimer()
-    } else {
-      startIdleBehavior()
-    }
-
-    return () => clearIdleTimer()
-  }, [isSpeaking, isLoading])
-
-  const clearIdleTimer = () => {
-    if (idleTimerRef.current) {
-      clearTimeout(idleTimerRef.current)
-      idleTimerRef.current = null
-    }
-  }
-
-  const startIdleBehavior = () => {
-    setAvatarState('listening')
-    scheduleRandomStateChange()
-  }
-
-  const scheduleRandomStateChange = () => {
-    clearIdleTimer()
-    const delay = 3000 + Math.random() * 5000
-
-    idleTimerRef.current = setTimeout(() => {
-      if (!isSpeaking && !isLoading) {
-        setAvatarState(prev => prev === 'listening' ? 'thinking' : 'listening')
-        scheduleRandomStateChange()
-      }
-    }, delay)
-  }
+    };
+    init();
+  }, []);
 
   const checkSession = () => {
-    const session = getSessionState()
-    setHasActiveSession(session.isActive)
-    setShowPayment(!session.isActive)
-  }
+    const session = getSessionState();
+    setHasActiveSession(session.isActive);
+    setShowPayment(!session.isActive);
+  };
 
   const handlePayment = async (option: PaymentOption) => {
-    setPaymentLoading(true)
-    setPaymentError(undefined)
+    setPaymentLoading(true);
+    setPaymentError(undefined);
 
-    // choose payment method based on option
-    const result = option === 'lifetime'
-      ? await initiateLifetimePayment()
-      : await initiatePayment()
+    const result =
+      option === "lifetime"
+        ? await initiateLifetimePayment()
+        : await initiatePayment();
 
-    setPaymentLoading(false)
+    setPaymentLoading(false);
 
-    if (result.success) {
-      // grant lifetime access if that option was selected
-      if (option === 'lifetime') {
-        await grantLifetimeAccess()
+    if (result.success && result.walletAddress) {
+      // initialize backend with wallet address as user id
+      await initializeBackend(result.walletAddress);
+
+      if (option === "lifetime") {
+        await grantLifetimeAccess();
       }
 
-      setShowPayment(false)
-      setHasActiveSession(true)
-      // onboarding is already done (new flow), go to chat
-      startConversation()
+      setShowPayment(false);
+      setHasActiveSession(true);
+      startConversation();
     } else {
-      setPaymentError(result.error)
-      const session = getSessionState()
+      setPaymentError(result.error || "Failed to get wallet address");
+      const session = getSessionState();
       if (session.isActive) {
-        setHasActiveSession(true)
+        setHasActiveSession(true);
         setTimeout(() => {
-          setShowPayment(false)
-          // onboarding is already done (new flow), go to chat
-          startConversation()
-        }, 2000)
+          setShowPayment(false);
+          startConversation();
+        }, 2000);
       }
     }
-  }
-
-  // prepare subtitle but don't show yet - wait for audio
-  const prepareSubtitle = (text: string) => {
-    pendingSubtitleRef.current = text
-  }
-
-  // show subtitle when audio starts playing
-  const showSubtitleNow = () => {
-    if (!pendingSubtitleRef.current) return
-    setCurrentSubtitle(pendingSubtitleRef.current)
-    setShowSubtitleBox(true)
-    subtitleFadeAnim.setValue(0)
-    Animated.timing(subtitleFadeAnim, {
-      toValue: 1,
-      duration: 300,
-      useNativeDriver: true
-    }).start()
-  }
-
-  const hideSubtitle = () => {
-    Animated.timing(subtitleFadeAnim, {
-      toValue: 0,
-      duration: 500,
-      useNativeDriver: true
-    }).start(() => {
-      setCurrentSubtitle('')
-      setShowSubtitleBox(false)
-      pendingSubtitleRef.current = ''
-    })
-  }
+  };
 
   const startConversation = async () => {
     // personalize welcome message if we have user's name
-    const profile = getUserProfile()
+    const profile = getUserProfile();
     const welcomeMsg = profile?.userName
       ? `Hey ${profile.userName}! ${WELCOME_MESSAGE}`
-      : WELCOME_MESSAGE
+      : WELCOME_MESSAGE;
 
-    prepareSubtitle(welcomeMsg)
-    // don't set speaking yet - wait for audio to be ready
-
-    const audioUrl = await generateSpeech(welcomeMsg)
-    if (audioUrl && isMountedRef.current) {
-      // pick speaking video and start speaking only when audio is ready
-      speakingVideoRef.current = getRandomSpeakingVideo()
-      setIsSpeaking(true)
-      showSubtitleNow()
-      await audioService.playAudio(audioUrl, () => {
-        if (isMountedRef.current) {
-          setIsSpeaking(false)
-          hideSubtitle()
-        }
-      })
-    } else if (isMountedRef.current) {
-      // no audio - show subtitle anyway for a few seconds
-      showSubtitleNow()
-      setTimeout(() => {
-        if (isMountedRef.current) hideSubtitle()
-      }, 3000)
-    }
-  }
+    // add luna's welcome message
+    const welcomeMessage: DisplayMessage = {
+      id: `welcome-${Date.now()}`,
+      role: "assistant",
+      content: welcomeMsg,
+      timestamp: new Date(),
+    };
+    setMessages((prev) => [...prev, welcomeMessage]);
+    playMessageSound();
+  };
 
   const handleSessionExpired = useCallback(async () => {
-    // lifetime users don't expire
-    if (hasLifetimeAccess()) return
+    if (hasLifetimeAccess()) return;
 
-    endSession()
-    setHasActiveSession(false)
-    setShowPayment(true)
-    await clearChatHistory()
-    setCurrentSubtitle('')
-  }, [])
+    endSession();
+    setHasActiveSession(false);
+    setShowPayment(true);
+    await clearChatHistory();
+    setMessages([]);
+  }, []);
 
-  // stop luna from speaking
-  const stopSpeaking = useCallback(() => {
-    audioService.stopAudio()
-    setIsSpeaking(false)
-    hideSubtitle()
-  }, [])
-
-  // handle onboarding completion - now shows payment after onboarding
   const handleOnboardingComplete = async () => {
-    // reload profile to get updated data
-    const profile = await loadUserProfile()
-    setUserProfile(profile)
-    // reinitialize chat with personalized prompt
-    initializeChatWithProfile(profile)
-    setShowOnboarding(false)
+    const profile = await loadUserProfile();
+    setUserProfile(profile);
+    initializeChatWithProfile(profile);
+    setShowOnboarding(false);
 
-    // NEW FLOW: after onboarding, check if payment needed
+    // note: backend will be initialized after payment with wallet address
+
     if (profile?.hasLifetimeAccess) {
-      setShowPayment(false)
-      setHasActiveSession(true)
-      startConversation()
+      setShowPayment(false);
+      setHasActiveSession(true);
+      startConversation();
     } else {
-      // check session state
-      const session = getSessionState()
+      const session = getSessionState();
       if (session.isActive) {
-        setHasActiveSession(true)
-        setShowPayment(false)
-        startConversation()
+        setHasActiveSession(true);
+        setShowPayment(false);
+        startConversation();
       } else {
-        // no active session, show payment
-        setShowPayment(true)
+        setShowPayment(true);
       }
     }
-  }
+  };
 
   const sendMessage = async () => {
-    // if luna is speaking, stop her first
-    if (isSpeaking) {
-      stopSpeaking()
-    }
+    if (!input.trim() || isLoading) return;
 
-    if (!input.trim() || isLoading) return
+    const userText = input.trim();
+    setInput("");
+    Keyboard.dismiss();
 
-    const userText = input.trim()
-    setInput('')
-    setIsLoading(true)
+    // add user message
+    const userMessage: DisplayMessage = {
+      id: `user-${Date.now()}`,
+      role: "user",
+      content: userText,
+      timestamp: new Date(),
+    };
+    setMessages((prev) => [...prev, userMessage]);
+
+    // scroll to bottom
+    setTimeout(() => {
+      flatListRef.current?.scrollToEnd({ animated: true });
+    }, 100);
+
+    // show typing indicator
+    setIsLoading(true);
+    setIsTyping(true);
 
     // get ai response
-    const response = await generateChatResponse(userText)
+    const response = await generateChatResponse(userText);
 
-    if (!isMountedRef.current) return
+    if (!isMountedRef.current) return;
 
-    setIsLoading(false)
-    prepareSubtitle(response)
-    // don't set speaking yet - wait for audio to be ready
+    setIsLoading(false);
+    setIsTyping(false);
 
-    const audioUrl = await generateSpeech(response)
+    // add assistant message
+    const assistantMessage: DisplayMessage = {
+      id: `assistant-${Date.now()}`,
+      role: "assistant",
+      content: response,
+      timestamp: new Date(),
+    };
+    setMessages((prev) => [...prev, assistantMessage]);
 
-    if (!isMountedRef.current) return
+    // play sound
+    playMessageSound();
 
-    if (audioUrl) {
-      // pick speaking video and start speaking only when audio is ready
-      speakingVideoRef.current = getRandomSpeakingVideo()
-      setIsSpeaking(true)
-      showSubtitleNow()
-      await audioService.playAudio(audioUrl, () => {
-        if (isMountedRef.current) {
-          setIsSpeaking(false)
-          hideSubtitle()
-        }
-      })
-    } else {
-      // no audio - show subtitle anyway
-      showSubtitleNow()
-      setTimeout(() => {
-        if (isMountedRef.current) hideSubtitle()
-      }, 4000)
+    // scroll to bottom
+    setTimeout(() => {
+      flatListRef.current?.scrollToEnd({ animated: true });
+    }, 100);
+  };
+
+  // upgrade to lifetime from settings
+  const handleUpgradeToLifetime = async (): Promise<boolean> => {
+    const result = await initiateLifetimePayment();
+    if (result.success && result.walletAddress) {
+      await initializeBackend(result.walletAddress);
+      await grantLifetimeAccess();
+      setHasActiveSession(true);
+      return true;
     }
-  }
+    return false;
+  };
 
-  // dev mode bypass - grants lifetime access (persists to storage)
-  const handleDevBypass = async () => {
-    await grantLifetimeAccess()
-    setShowPayment(false)
-    setShowOnboarding(false)
-    setHasActiveSession(true)
-    startConversation()
-  }
+  // logout - clear all data and show onboarding
+  const handleLogout = async () => {
+    console.log("[Chat] logging out...");
+    // clear all data
+    await clearUserProfile();
+    await clearChatHistory();
+    endSession();
 
-  // NEW FLOW: show onboarding first (before payment)
+    // reset state
+    setMessages([]);
+    setUserProfile(null);
+    setHasActiveSession(false);
+    setShowSettings(false);
+    setShowOnboarding(true);
+    console.log("[Chat] logout complete");
+  };
+
+  // restore subscription from firestore using wallet address
+  const handleRestoreSubscription = async () => {
+    setIsRestoringSubscription(true);
+
+    // connect wallet to get wallet address
+    const walletResult = await connectWallet();
+
+    if (!walletResult.success || !walletResult.walletAddress) {
+      setIsRestoringSubscription(false);
+      Alert.alert(
+        "Wallet Connection Failed",
+        walletResult.error || "Could not connect to wallet",
+      );
+      return;
+    }
+
+    // check firestore for subscription using wallet address
+    const restored = await restoreSubscriptionFromFirestore(
+      walletResult.walletAddress,
+    );
+
+    setIsRestoringSubscription(false);
+
+    if (restored) {
+      // load old messages from firestore
+      console.log("[Chat] restoring messages from firestore...");
+      const firestoreMessages = await loadMessagesFromFirestore();
+
+      if (firestoreMessages.length > 0) {
+        // convert to display messages
+        const displayMessages: DisplayMessage[] = firestoreMessages.map(
+          (m, index) => ({
+            id: `restored-${index}-${Date.now()}`,
+            role: m.role,
+            content: m.content,
+            timestamp: new Date(),
+          }),
+        );
+        setMessages(displayMessages);
+        console.log("[Chat] restored", displayMessages.length, "messages");
+        Alert.alert(
+          "Success",
+          `Restored ${displayMessages.length} messages from your previous conversations!`,
+        );
+      } else {
+        Alert.alert("Success", "Your subscription has been restored!");
+        startConversation();
+      }
+
+      setShowPayment(false);
+      setHasActiveSession(true);
+    } else {
+      Alert.alert(
+        "No Subscription Found",
+        "We could not find an active subscription for this wallet. Please contact support if you believe this is an error.",
+        [
+          {
+            text: "Contact Support",
+            onPress: () => Linking.openURL("https://t.me/lunaaiseeker"),
+          },
+          { text: "OK" },
+        ],
+      );
+    }
+  };
+
+  // pick image from library
+  const pickImage = async () => {
+    if (isLoading) return;
+
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert(
+        "Permission needed",
+        "Please allow access to your photos to send images.",
+      );
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      allowsEditing: true,
+      quality: 0.7,
+      base64: false,
+    });
+
+    if (!result.canceled && result.assets[0]) {
+      await sendImageMessage(result.assets[0].uri);
+    }
+  };
+
+  // take photo with camera
+  const takePhoto = async () => {
+    if (isLoading) return;
+
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert(
+        "Permission needed",
+        "Please allow camera access to take photos.",
+      );
+      return;
+    }
+
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: true,
+      quality: 0.7,
+      base64: false,
+    });
+
+    if (!result.canceled && result.assets[0]) {
+      await sendImageMessage(result.assets[0].uri);
+    }
+  };
+
+  // send image message
+  const sendImageMessage = async (imageUri: string) => {
+    Keyboard.dismiss();
+
+    // add user message with image
+    const userMessage: DisplayMessage = {
+      id: `user-img-${Date.now()}`,
+      role: "user",
+      content: input.trim() || "",
+      timestamp: new Date(),
+      imageUri: imageUri,
+    };
+    setMessages((prev) => [...prev, userMessage]);
+    const userText = input.trim();
+    setInput("");
+
+    // scroll to bottom
+    setTimeout(() => {
+      flatListRef.current?.scrollToEnd({ animated: true });
+    }, 100);
+
+    // show typing indicator
+    setIsLoading(true);
+    setIsTyping(true);
+
+    // get ai response with image analysis
+    const response = await generateChatResponseWithImage(
+      imageUri,
+      userText || undefined,
+    );
+
+    if (!isMountedRef.current) return;
+
+    setIsLoading(false);
+    setIsTyping(false);
+
+    // add assistant message
+    const assistantMessage: DisplayMessage = {
+      id: `assistant-${Date.now()}`,
+      role: "assistant",
+      content: response,
+      timestamp: new Date(),
+    };
+    setMessages((prev) => [...prev, assistantMessage]);
+
+    // play sound
+    playMessageSound();
+
+    // scroll to bottom
+    setTimeout(() => {
+      flatListRef.current?.scrollToEnd({ animated: true });
+    }, 100);
+  };
+
+  // render message bubble - instagram style
+  const renderMessage = ({ item }: { item: DisplayMessage }) => {
+    const isUser = item.role === "user";
+    const hasImage = !!item.imageUri;
+    // hide the image analysis text from user messages
+    const displayContent =
+      isUser && item.content.startsWith("[User sent an image")
+        ? ""
+        : item.content;
+
+    return (
+      <View
+        style={[
+          styles.messageRow,
+          isUser ? styles.messageRowUser : styles.messageRowAssistant,
+        ]}
+      >
+        {!isUser && (
+          <Image
+            source={require("../../assets/icon.png")}
+            style={styles.avatar}
+          />
+        )}
+        <View
+          style={[
+            styles.messageBubble,
+            isUser ? styles.userBubble : styles.assistantBubble,
+            hasImage && styles.imageBubble,
+          ]}
+        >
+          {hasImage && (
+            <Image
+              source={{ uri: item.imageUri }}
+              style={styles.messageImage}
+              resizeMode="cover"
+            />
+          )}
+          {displayContent.length > 0 && (
+            <Text
+              style={[
+                styles.messageText,
+                isUser ? styles.userMessageText : styles.assistantMessageText,
+                hasImage && styles.imageCaption,
+              ]}
+            >
+              {displayContent}
+            </Text>
+          )}
+        </View>
+      </View>
+    );
+  };
+
+  // onboarding screen
   if (showOnboarding) {
     return (
       <>
-        <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
+        <StatusBar
+          barStyle="light-content"
+          backgroundColor="transparent"
+          translucent
+        />
         <OnboardingScreen onComplete={handleOnboardingComplete} />
       </>
-    )
+    );
   }
 
-  // show payment screen after onboarding if no active session
+  // payment screen
   if (showPayment) {
     return (
       <>
-        <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
+        <StatusBar
+          barStyle="light-content"
+          backgroundColor="transparent"
+          translucent
+        />
         <PaymentModal
           visible={showPayment}
           isLoading={paymentLoading}
           onPay={handlePayment}
-          onClose={() => {}}
-          onDevBypass={handleDevBypass}
+          onShowRefund={() => setShowRefundSheet(true)}
+          onRestoreSubscription={handleRestoreSubscription}
+          isRestoringSubscription={isRestoringSubscription}
           error={paymentError}
         />
+        <RefundBottomSheet
+          visible={showRefundSheet}
+          onClose={() => setShowRefundSheet(false)}
+        />
       </>
-    )
+    );
   }
 
   return (
-    <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
+    <View style={[styles.container, { paddingTop: insets.top }]}>
+      <StatusBar barStyle="light-content" backgroundColor="#000" />
 
-      {/* single video player - source changed via replace() */}
-      {player && (
-        <VideoView
-          player={player}
-          style={styles.video}
-          contentFit="cover"
-          nativeControls={false}
-        />
-      )}
-
-      {/* dark overlay at top only */}
-      <View style={[styles.topOverlay, { height: insets.top + 60 }]} />
-
-      {/* header */}
-      <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
-        <Text style={styles.headerTitle}>Luna</Text>
+      {/* header - instagram style (outside KeyboardAvoidingView) */}
+      <View style={styles.header}>
+        <View style={styles.headerLeft}>
+          <Image
+            source={require("../../assets/icon.png")}
+            style={styles.headerAvatar}
+          />
+          <View>
+            <Text style={styles.headerTitle}>Luna</Text>
+            <Text style={styles.headerSubtitle}>
+              {isTyping ? "typing..." : "Active now"}
+            </Text>
+          </View>
+        </View>
         <View style={styles.headerRight}>
           {hasActiveSession && !hasLifetimeAccess() && (
             <SessionTimer onSessionExpired={handleSessionExpired} />
           )}
           <TouchableOpacity
-            style={styles.helpButton}
-            onPress={() => Linking.openURL('https://t.me/lunaaiseeker')}
+            style={styles.headerIcon}
+            onPress={() => setShowSettings(true)}
           >
-            <Text style={styles.helpButtonText}>?</Text>
+            <Ionicons name="settings-outline" size={24} color="#fff" />
           </TouchableOpacity>
         </View>
       </View>
 
-      {/* subtitle area - smaller box, scrollable, moves up when keyboard visible */}
-      {showSubtitleBox && currentSubtitle !== '' && (
-        <Animated.View style={[
-          styles.subtitleContainer,
-          { opacity: subtitleFadeAnim },
-          keyboardVisible && styles.subtitleContainerKeyboard
-        ]}>
-          <ScrollView
-            style={styles.subtitleScroll}
-            showsVerticalScrollIndicator={true}
-            persistentScrollbar={true}
-          >
-            <Text style={styles.subtitle}>"{currentSubtitle}"</Text>
-          </ScrollView>
-        </Animated.View>
+      {/* twitter share banner */}
+      {!hasLifetimeAccess() && (
+        <TwitterShareBanner
+          onLifetimeGranted={() => setHasActiveSession(true)}
+        />
       )}
 
-      {/* loading indicator */}
-      {isLoading && (
-        <View style={styles.loadingContainer}>
-          <Text style={styles.loadingText}>Luna is thinking...</Text>
-        </View>
-      )}
-
-      {/* input section - animated to move above keyboard */}
-      <Animated.View
-        style={[
-          styles.inputAnimatedContainer,
-          { bottom: keyboardHeight, paddingBottom: Math.max(insets.bottom, 16) }
-        ]}
+      {/* keyboard avoiding view wraps only the chat content */}
+      <KeyboardAvoidingView
+        style={styles.keyboardAvoid}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={Platform.OS === "ios" ? insets.top + 60 : 20}
       >
-        <View style={styles.inputWrapper}>
-          <View style={styles.inputContainer}>
+        {/* message list */}
+        <FlatList
+          ref={flatListRef}
+          data={messages}
+          renderItem={renderMessage}
+          keyExtractor={(item) => item.id}
+          style={styles.messageList}
+          contentContainerStyle={styles.messageListContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="interactive"
+          automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
+          onContentSizeChange={() => {
+            flatListRef.current?.scrollToEnd({ animated: true });
+          }}
+          ListEmptyComponent={
+            <View style={styles.emptyContainer}>
+              <Text style={styles.emptyText}>Start chatting with Luna!</Text>
+            </View>
+          }
+          ListFooterComponent={
+            isTyping ? (
+              <View style={styles.typingContainer}>
+                <Image
+                  source={require("../../assets/icon.png")}
+                  style={styles.avatar}
+                />
+                <View style={styles.typingBubble}>
+                  <View style={styles.typingDots}>
+                    <View style={[styles.dot, styles.dot1]} />
+                    <View style={[styles.dot, styles.dot2]} />
+                    <View style={[styles.dot, styles.dot3]} />
+                  </View>
+                </View>
+              </View>
+            ) : null
+          }
+        />
+
+        {/* input section - instagram style */}
+        <View style={[styles.inputContainer, { paddingBottom: insets.bottom }]}>
+          <View style={styles.inputWrapper}>
+            <TouchableOpacity
+              style={styles.inputIcon}
+              onPress={takePhoto}
+              disabled={isLoading}
+            >
+              <Ionicons
+                name="camera-outline"
+                size={24}
+                color={isLoading ? "#666" : "#fff"}
+              />
+            </TouchableOpacity>
             <TextInput
               value={input}
               onChangeText={setInput}
-              placeholder={isSpeaking ? "Type to interrupt Luna..." : "Talk to Luna..."}
+              placeholder="Message..."
               placeholderTextColor="rgba(255,255,255,0.5)"
               style={styles.input}
               multiline
               maxLength={500}
               editable={!isLoading}
+              onSubmitEditing={sendMessage}
             />
-            {isSpeaking ? (
+            {input.trim() ? (
               <TouchableOpacity
-                style={styles.stopButton}
-                onPress={stopSpeaking}
-              >
-                <Text style={styles.stopText}>Stop</Text>
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity
-                style={[styles.sendButton, (!input.trim() || isLoading) && styles.sendButtonDisabled]}
+                style={styles.sendTextButton}
                 onPress={sendMessage}
-                disabled={!input.trim() || isLoading}
+                disabled={isLoading}
               >
                 <Text style={styles.sendText}>Send</Text>
               </TouchableOpacity>
+            ) : (
+              <View style={styles.inputActions}>
+                <TouchableOpacity
+                  style={styles.inputIcon}
+                  onPress={pickImage}
+                  disabled={isLoading}
+                >
+                  <Ionicons
+                    name="image-outline"
+                    size={24}
+                    color={isLoading ? "#666" : "#fff"}
+                  />
+                </TouchableOpacity>
+              </View>
             )}
           </View>
         </View>
-      </Animated.View>
+      </KeyboardAvoidingView>
+
+      {/* settings screen overlay */}
+      {showSettings && (
+        <View style={styles.settingsOverlay}>
+          <SettingsScreen
+            onClose={() => setShowSettings(false)}
+            onShowRefundPolicy={() => {
+              setShowSettings(false);
+              setShowRefundSheet(true);
+            }}
+            onUpgradeToLifetime={handleUpgradeToLifetime}
+            onLogout={handleLogout}
+          />
+        </View>
+      )}
+
+      {/* refund policy bottom sheet */}
+      <RefundBottomSheet
+        visible={showRefundSheet}
+        onClose={() => setShowRefundSheet(false)}
+      />
     </View>
-  )
-}
+  );
+};
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0a0a0f'
+    backgroundColor: "#000",
   },
-  video: {
-    ...StyleSheet.absoluteFillObject,
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT
+  keyboardAvoid: {
+    flex: 1,
   },
-  topOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: 'rgba(10, 10, 15, 0.6)'
-  },
+  // header - instagram style
   header: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingBottom: 12,
-    zIndex: 10
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: "#000",
+    borderBottomWidth: 0.5,
+    borderBottomColor: "rgba(255, 255, 255, 0.15)",
+  },
+  headerLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  headerAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#262626",
   },
   headerTitle: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#ff69b4',
-    textShadowColor: 'rgba(255, 105, 180, 0.5)',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 10
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#fff",
+  },
+  headerSubtitle: {
+    fontSize: 12,
+    color: "rgba(255, 255, 255, 0.6)",
+    marginTop: 1,
   },
   headerRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 20,
   },
-  helpButton: {
+  headerIcon: {
+    padding: 4,
+  },
+  // chat container
+  chatContainer: {
+    flex: 1,
+    backgroundColor: "#000",
+  },
+  messageList: {
+    flex: 1,
+  },
+  messageListContent: {
+    paddingHorizontal: 12,
+    paddingVertical: 16,
+    gap: 4,
+  },
+  emptyContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingTop: 100,
+  },
+  emptyText: {
+    color: "rgba(255, 255, 255, 0.4)",
+    fontSize: 14,
+  },
+  // message rows - instagram style
+  messageRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    marginVertical: 2,
+  },
+  messageRowUser: {
+    justifyContent: "flex-end",
+    paddingLeft: 50,
+  },
+  messageRowAssistant: {
+    justifyContent: "flex-start",
+    paddingRight: 50,
+  },
+  avatar: {
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
-    justifyContent: 'center',
-    alignItems: 'center'
+    marginRight: 8,
+    backgroundColor: "#262626",
   },
-  helpButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600'
+  // message bubbles - instagram style
+  messageBubble: {
+    maxWidth: "85%",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 22,
   },
-  subtitleContainer: {
-    position: 'absolute',
-    bottom: 140,
-    left: 16,
-    right: 16,
-    maxHeight: 100,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    borderRadius: 12,
-    padding: 12,
-    borderLeftWidth: 3,
-    borderLeftColor: '#ff69b4'
+  userBubble: {
+    backgroundColor: "#7C3AED",
+    borderBottomRightRadius: 4,
   },
-  subtitleContainerKeyboard: {
-    bottom: 320
+  assistantBubble: {
+    backgroundColor: "#262626",
+    borderBottomLeftRadius: 4,
   },
-  subtitleScroll: {
-    maxHeight: 76
+  messageText: {
+    fontSize: 15,
+    lineHeight: 20,
   },
-  subtitle: {
-    fontSize: 14,
-    color: '#fff',
-    fontStyle: 'italic',
-    lineHeight: 20
+  userMessageText: {
+    color: "#fff",
   },
-  loadingContainer: {
-    position: 'absolute',
-    bottom: 140,
-    left: 16,
-    right: 16,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    borderRadius: 12,
-    padding: 12,
-    alignItems: 'center'
+  assistantMessageText: {
+    color: "#fff",
   },
-  loadingText: {
-    fontSize: 14,
-    color: '#ff69b4',
-    fontStyle: 'italic'
+  // image in message
+  imageBubble: {
+    padding: 4,
+    overflow: "hidden",
   },
-  inputAnimatedContainer: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    backgroundColor: 'rgba(10, 10, 15, 0.9)'
+  messageImage: {
+    width: 200,
+    height: 200,
+    borderRadius: 18,
+  },
+  imageCaption: {
+    marginTop: 8,
+    paddingHorizontal: 8,
+    paddingBottom: 4,
+  },
+  // typing indicator
+  typingContainer: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    marginVertical: 2,
+    paddingRight: 50,
+  },
+  typingBubble: {
+    backgroundColor: "#262626",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 22,
+    borderBottomLeftRadius: 4,
+  },
+  typingDots: {
+    flexDirection: "row",
+    gap: 4,
+  },
+  dot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: "#8E8E93",
+  },
+  dot1: {
+    opacity: 1,
+  },
+  dot2: {
+    opacity: 0.7,
+  },
+  dot3: {
+    opacity: 0.4,
+  },
+  // input area - instagram style
+  inputContainer: {
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    backgroundColor: "#000",
+    borderTopWidth: 0.5,
+    borderTopColor: "rgba(255, 255, 255, 0.15)",
   },
   inputWrapper: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#262626",
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.15)",
+    paddingHorizontal: 4,
   },
-  inputContainer: {
-    flexDirection: 'row',
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 12,
-    alignItems: 'flex-end',
-    gap: 12
+  inputIcon: {
+    padding: 10,
+  },
+  inputActions: {
+    flexDirection: "row",
   },
   input: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.3)',
-    borderRadius: 24,
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    color: '#fff',
+    color: "#fff",
     fontSize: 16,
-    maxHeight: 120,
-    minHeight: 50,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 105, 180, 0.4)'
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    maxHeight: 100,
+    minHeight: 44,
   },
-  sendButton: {
-    backgroundColor: '#ff69b4',
-    paddingHorizontal: 28,
-    paddingVertical: 14,
-    borderRadius: 24,
-    justifyContent: 'center',
-    shadowColor: '#ff69b4',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
-    elevation: 6
-  },
-  sendButtonDisabled: {
-    opacity: 0.4
+  sendTextButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
   },
   sendText: {
-    color: '#fff',
-    fontWeight: '600',
-    fontSize: 16
+    color: "#7C3AED",
+    fontSize: 16,
+    fontWeight: "600",
   },
-  stopButton: {
-    backgroundColor: '#ff6b6b',
-    paddingHorizontal: 28,
-    paddingVertical: 14,
-    borderRadius: 24,
-    justifyContent: 'center',
-    shadowColor: '#ff6b6b',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
-    elevation: 6
+  settingsOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 100,
   },
-  stopText: {
-    color: '#fff',
-    fontWeight: '600',
-    fontSize: 16
-  }
-})
+});

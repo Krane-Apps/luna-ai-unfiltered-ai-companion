@@ -56,3 +56,11 @@ ic_launcher_round/
 publishing/publisher-keypair.json
 publishing/WALLET_INFO.md
 publishing/node_modules/
+
+# build artifacts
+apks/
+builds/
+*.apk
+
+# firebase config (contains API keys)
+google-services.json

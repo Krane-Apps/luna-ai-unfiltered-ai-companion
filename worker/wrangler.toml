@@ -1,0 +1,18 @@
+# luna ai notification worker
+name = "luna-ai-notifications"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# scheduled cron triggers for proactive messages
+[triggers]
+crons = [
+  "0 * * * *",  # every hour - check for timezone-based messages
+]
+
+# environment variables (set via wrangler secret)
+# FIREBASE_PROJECT_ID - your firebase project id
+# FIREBASE_API_KEY - your firebase api key
+# HF_TOKEN - huggingface token (same as app uses for TTS)
+
+[vars]
+ENVIRONMENT = "production"

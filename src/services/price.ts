@@ -1,5 +1,7 @@
 // price service for fetching SOL price from CoinGecko
 
+import { isNetworkError } from './api'
+
 const COINGECKO_URL = 'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd'
 
 let cachedPrice: number | null = null
@@ -20,7 +22,11 @@ export const getSOLPriceUSD = async (): Promise<number | null> => {
     console.log('fetched SOL price:', cachedPrice)
     return cachedPrice
   } catch (error) {
-    console.error('failed to fetch SOL price:', error)
+    if (isNetworkError(error)) {
+      console.warn('[Price] network error, using cached price')
+    } else {
+      console.error('failed to fetch SOL price:', error)
+    }
     return cachedPrice // return stale cache if available
   }
 }

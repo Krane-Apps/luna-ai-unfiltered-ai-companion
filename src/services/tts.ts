@@ -2,6 +2,7 @@
 
 import { InferenceClient } from '@huggingface/inference'
 import { HF_TOKEN } from '../constants/config'
+import { isNetworkError } from './api'
 
 let ttsClient: InferenceClient | null = null
 
@@ -23,8 +24,9 @@ const blobToDataUrl = async (blob: Blob): Promise<string> => {
 }
 
 export const generateSpeech = async (text: string): Promise<string | null> => {
+  const shortText = text.substring(0, 40) + (text.length > 40 ? '...' : '')
   try {
-    console.log('Generating speech for:', text.substring(0, 50) + '...')
+    console.log('[TTS] generating:', shortText)
 
     const client = getClient()
 
@@ -37,10 +39,14 @@ export const generateSpeech = async (text: string): Promise<string | null> => {
 
     // convert blob to data url for audio playback
     const dataUrl = await blobToDataUrl(response)
-    console.log('Speech generated successfully')
+    console.log('[TTS] done:', shortText)
     return dataUrl
   } catch (error) {
-    console.error('tts error:', error)
+    if (isNetworkError(error)) {
+      console.warn('[TTS] network error, skipping:', shortText)
+    } else {
+      console.error('[TTS] error for:', shortText, error)
+    }
     return null
   }
 }

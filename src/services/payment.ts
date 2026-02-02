@@ -16,6 +16,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { PAYMENT_CONFIG, SOLANA_RPC_URL, SOLANA_CLUSTER, GRACE_PERIOD_MINUTES } from '../constants/config'
 import { SessionState } from '../types'
+import { isNetworkError, showNetworkError } from './api'
 
 const SESSION_STORAGE_KEY = 'luna_session'
 
@@ -50,13 +51,15 @@ export const getConnection = (): Connection => {
   return new Connection(SOLANA_RPC_URL, 'confirmed')
 }
 
-export const initiatePayment = async (): Promise<{ success: boolean; signature?: string; error?: string }> => {
+export const initiatePayment = async (): Promise<{ success: boolean; signature?: string; walletAddress?: string; error?: string }> => {
   console.log('=== PAYMENT INITIATED ===')
   console.log('RPC URL:', SOLANA_RPC_URL)
   console.log('Cluster:', SOLANA_CLUSTER)
   console.log('Treasury Wallet:', PAYMENT_CONFIG.treasuryWallet)
-  console.log('Price in SOL:', PAYMENT_CONFIG.sessionPriceSOL)
-  console.log('Price in Lamports:', Math.floor(PAYMENT_CONFIG.sessionPriceSOL * LAMPORTS_PER_SOL))
+  console.log('Price in SOL:', PAYMENT_CONFIG.singleChatPriceSOL)
+  console.log('Price in Lamports:', Math.floor(PAYMENT_CONFIG.singleChatPriceSOL * LAMPORTS_PER_SOL))
+
+  let walletAddress: string | undefined
 
   try {
     console.log('Starting wallet transaction...')
@@ -88,6 +91,9 @@ export const initiatePayment = async (): Promise<{ success: boolean; signature?:
       const publicKey = decodeAddress(userAddress)
       console.log('User PublicKey created:', publicKey.toBase58())
 
+      // store wallet address for return
+      walletAddress = publicKey.toBase58()
+
       const connection = getConnection()
       console.log('Connection created')
 
@@ -97,12 +103,12 @@ export const initiatePayment = async (): Promise<{ success: boolean; signature?:
       console.log('User balance (lamports):', balance)
       console.log('User balance (SOL):', balance / LAMPORTS_PER_SOL)
 
-      const lamports = Math.floor(PAYMENT_CONFIG.sessionPriceSOL * LAMPORTS_PER_SOL)
+      const lamports = Math.floor(PAYMENT_CONFIG.singleChatPriceSOL * LAMPORTS_PER_SOL)
       console.log('Required lamports:', lamports)
 
       if (balance < lamports) {
         console.log('INSUFFICIENT BALANCE!')
-        throw new Error(`Insufficient balance. Have ${balance / LAMPORTS_PER_SOL} SOL, need ${PAYMENT_CONFIG.sessionPriceSOL} SOL`)
+        throw new Error(`Insufficient balance. Have ${balance / LAMPORTS_PER_SOL} SOL, need ${PAYMENT_CONFIG.singleChatPriceSOL} SOL`)
       }
 
       // create transfer transaction
@@ -200,7 +206,7 @@ export const initiatePayment = async (): Promise<{ success: boolean; signature?:
     console.log('Transaction confirmed successfully!')
     await startSession(signature)
 
-    return { success: true, signature }
+    return { success: true, signature, walletAddress }
   } catch (error: unknown) {
     console.log('=== PAYMENT ERROR ===')
     console.log('Error type:', typeof error)
@@ -217,6 +223,11 @@ export const initiatePayment = async (): Promise<{ success: boolean; signature?:
       console.log('Error JSON:', JSON.stringify(error, null, 2))
     }
 
+    // check for network error
+    if (isNetworkError(error)) {
+      showNetworkError()
+    }
+
     // grant grace period on failure
     console.log('Granting grace period due to failure')
     await grantGracePeriod()
@@ -226,16 +237,18 @@ export const initiatePayment = async (): Promise<{ success: boolean; signature?:
 
     return {
       success: false,
-      error: errorMessage
+      error: isNetworkError(error) ? 'No internet connection. Please check your connection and try again.' : errorMessage
     }
   }
 }
 
 // lifetime payment - same flow but different amount
-export const initiateLifetimePayment = async (): Promise<{ success: boolean; signature?: string; error?: string }> => {
+export const initiateLifetimePayment = async (): Promise<{ success: boolean; signature?: string; walletAddress?: string; error?: string }> => {
   console.log('=== LIFETIME PAYMENT INITIATED ===')
   console.log('Lifetime Price in SOL:', PAYMENT_CONFIG.lifetimePriceSOL)
   console.log('Lifetime Price in Lamports:', Math.floor(PAYMENT_CONFIG.lifetimePriceSOL * LAMPORTS_PER_SOL))
+
+  let walletAddress: string | undefined
 
   try {
     const result = await transact(async (wallet: Web3MobileWallet) => {
@@ -251,6 +264,9 @@ export const initiateLifetimePayment = async (): Promise<{ success: boolean; sig
       const userAddress = authResult.accounts[0].address
       const publicKey = decodeAddress(userAddress)
       console.log('User PublicKey:', publicKey.toBase58())
+
+      // store wallet address for return
+      walletAddress = publicKey.toBase58()
 
       const connection = getConnection()
       const balance = await connection.getBalance(publicKey)
@@ -328,11 +344,14 @@ export const initiateLifetimePayment = async (): Promise<{ success: boolean; sig
 
     console.log('Lifetime payment confirmed!')
     // note: caller should grant lifetime access via profile service
-    return { success: true, signature }
+    return { success: true, signature, walletAddress }
   } catch (error: unknown) {
     console.log('=== LIFETIME PAYMENT ERROR ===', error)
+    if (isNetworkError(error)) {
+      showNetworkError()
+    }
     const errorMessage = error instanceof Error ? error.message : 'Payment failed'
-    return { success: false, error: errorMessage }
+    return { success: false, error: isNetworkError(error) ? 'No internet connection. Please check your connection and try again.' : errorMessage }
   }
 }
 
@@ -440,5 +459,38 @@ export const endSession = async (): Promise<void> => {
     await AsyncStorage.removeItem(SESSION_STORAGE_KEY)
   } catch (error) {
     console.error('Failed to clear session from storage:', error)
+  }
+}
+
+// connect wallet without making payment (for restore subscription flow)
+export const connectWallet = async (): Promise<{ success: boolean; walletAddress?: string; error?: string }> => {
+  console.log('=== WALLET CONNECT ===')
+
+  try {
+    const walletAddress = await transact(async (wallet: Web3MobileWallet) => {
+      const authResult = await wallet.authorize({
+        cluster: SOLANA_CLUSTER,
+        identity: APP_IDENTITY
+      })
+
+      if (!authResult.accounts || authResult.accounts.length === 0) {
+        throw new Error('No accounts returned from wallet authorization')
+      }
+
+      const userAddress = authResult.accounts[0].address
+      const publicKey = decodeAddress(userAddress)
+      console.log('Connected wallet:', publicKey.toBase58())
+
+      return publicKey.toBase58()
+    })
+
+    return { success: true, walletAddress }
+  } catch (error: unknown) {
+    console.log('=== WALLET CONNECT ERROR ===', error)
+    if (isNetworkError(error)) {
+      showNetworkError()
+    }
+    const errorMessage = error instanceof Error ? error.message : 'Failed to connect wallet'
+    return { success: false, error: isNetworkError(error) ? 'No internet connection. Please check your connection and try again.' : errorMessage }
   }
 }

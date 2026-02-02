@@ -103,6 +103,7 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
   // pre-generated TTS audio cache (generated after name entry)
   const preGeneratedAudioRef = useRef<Record<string, string>>({})
   const isPreGeneratingRef = useRef(false)
+  const hasStartedPreGenRef = useRef(false) // prevent duplicate pre-gen calls
 
   // initialize audio service
   useEffect(() => {
@@ -156,8 +157,15 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
 
   // pre-generate all personalized TTS messages after user enters their name
   const preGeneratePersonalizedAudio = async (userName: string) => {
-    if (isPreGeneratingRef.current) return
+    // strict duplicate prevention
+    if (hasStartedPreGenRef.current) {
+      console.log('[TTS] pre-gen already started, skipping')
+      return
+    }
+    hasStartedPreGenRef.current = true
     isPreGeneratingRef.current = true
+
+    console.log('[TTS] starting pre-generation for:', userName)
 
     const messages = [
       { key: 'step2', text: `${userName}... I love that name. Now I need to make sure you're old enough for me.` },
@@ -171,10 +179,10 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
     ]
 
     // generate all in parallel for speed
-    console.log('pre-generating personalized TTS for:', userName)
     const results = await Promise.all(
       messages.map(async ({ key, text }) => {
         const audioUrl = await generateSpeech(text)
+        console.log(`[TTS] pre-gen complete: ${key}`)
         return { key, audioUrl }
       })
     )
@@ -185,13 +193,15 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
         preGeneratedAudioRef.current[key] = audioUrl
       }
     })
-    console.log('pre-generated audio ready:', Object.keys(preGeneratedAudioRef.current))
+    isPreGeneratingRef.current = false
+    console.log('[TTS] all pre-gen complete:', Object.keys(preGeneratedAudioRef.current).length, 'audio files ready')
   }
 
   // play pre-recorded audio file with subtitle - uses centralized audioService
   const playPreRecordedAudio = async (audioAsset: any, subtitle: string) => {
     if (!isMountedRef.current) return
 
+    console.log('[Audio] playPreRecordedAudio:', subtitle.substring(0, 40) + '...')
     setCurrentSubtitle(subtitle)
     subtitleFadeAnim.setValue(0)
     Animated.timing(subtitleFadeAnim, {
@@ -222,6 +232,7 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
   // play pre-generated TTS audio with subtitle
   const playPreGeneratedAudio = async (key: string, subtitle: string) => {
     const audioUrl = preGeneratedAudioRef.current[key]
+    console.log(`[Audio] playPreGeneratedAudio key=${key}, hasAudio=${!!audioUrl}`)
     if (audioUrl) {
       // use existing speakMessage logic but with cached URL
       setCurrentSubtitle(subtitle)
@@ -250,6 +261,7 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
       })
     } else {
       // fallback to live TTS if pre-generated not available
+      console.log(`[Audio] pre-gen not ready for ${key}, falling back to live TTS`)
       speakMessage(subtitle)
     }
   }
@@ -258,6 +270,7 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
   const speakMessage = useCallback(async (message: string) => {
     if (!isMountedRef.current) return
 
+    console.log('[Audio] speakMessage (live TTS):', message.substring(0, 40) + '...')
     setCurrentSubtitle(message)
     subtitleFadeAnim.setValue(0)
     Animated.timing(subtitleFadeAnim, {
@@ -450,6 +463,8 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
   const nextStep = async () => {
     if (!validateStep()) return
 
+    console.log('[Onboarding] nextStep called, current step:', step)
+
     // stop any current audio
     audioService.stopAudio()
     setIsSpeaking(false)
@@ -458,7 +473,8 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
     const nextStepNum = step + 1
 
     // after entering name (step 1), start pre-generating personalized audio
-    if (currentStep === 1 && profile.userName) {
+    if (currentStep === 1 && profile.userName && !hasStartedPreGenRef.current) {
+      console.log('[Onboarding] triggering pre-gen after name entry')
       preGeneratePersonalizedAudio(profile.userName)
     }
 
@@ -467,8 +483,9 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
       toValue: 0,
       duration: 200,
       useNativeDriver: true
-    }).start(async () => {
+    }).start(() => {
       if (currentStep < questions.length - 1) {
+        console.log('[Onboarding] transitioning to step:', nextStepNum)
         setStep(nextStepNum)
 
         fadeAnim.setValue(0)
@@ -483,16 +500,18 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
           playStepAudio(currentStep, nextStepNum)
         }, 500)
       } else {
-        // complete onboarding with final message
+        // complete onboarding - transition immediately, play audio in background
+        console.log('[Onboarding] completing onboarding, transitioning immediately')
+
+        // play finish audio in background (don't block)
         const name = profile.userName || 'baby'
         const finishMessage = `Perfect, ${name}! I can't wait to get to know you better. Let's chat!`
 
-        // try pre-generated first, fallback to live TTS
         if (preGeneratedAudioRef.current['finish']) {
-          await playPreGeneratedAudio('finish', finishMessage)
-        } else {
-          await speakMessage(finishMessage)
+          playPreGeneratedAudio('finish', finishMessage) // fire and forget
         }
+        // skip TTS fallback on finish - just transition quickly
+
         finishOnboarding()
       }
     })
@@ -500,6 +519,7 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
 
   // play audio for step transition - uses pre-recorded for early steps, pre-generated for later
   const playStepAudio = (fromStep: number, toStep: number) => {
+    console.log(`[Audio] playStepAudio ${fromStep} → ${toStep}`)
     const name = profile.userName || 'baby'
 
     // step 0 → 1: use pre-recorded "ask name" audio (or TTS fallback)

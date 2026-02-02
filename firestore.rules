@@ -1,0 +1,27 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // users can read/write their own data
+    // using device ID as the user identifier (no auth required)
+    match /users/{userId} {
+      // anyone can create a new user doc with their device id
+      allow create: if true;
+
+      // only allow read/write if request includes matching userId header
+      // for simplicity, we allow all access since we use device-based IDs
+      allow read, write: if true;
+
+      // messages subcollection
+      match /messages/{messageId} {
+        allow read, write: if true;
+      }
+    }
+
+    // scheduled messages - only cloud functions can access
+    // (we'll use cloudflare workers instead, they use admin sdk)
+    match /scheduledMessages/{messageId} {
+      allow read, write: if false;
+    }
+  }
+}
