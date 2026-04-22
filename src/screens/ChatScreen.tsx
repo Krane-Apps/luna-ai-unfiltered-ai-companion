@@ -17,10 +17,9 @@ import {
   Linking,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Audio } from "expo-av";
 import * as ImagePicker from "expo-image-picker";
 import { Ionicons } from "@expo/vector-icons";
-import { PaymentModal, PaymentOption } from "../components/PaymentModal";
+import { PaymentModal } from "../components/PaymentModal";
 import { SessionTimer } from "../components/SessionTimer";
 import { TwitterShareBanner } from "../components/TwitterShareBanner";
 import { RefundBottomSheet } from "../components/RefundBottomSheet";
@@ -36,7 +35,6 @@ import {
   loadMessagesFromFirestore,
 } from "../services/chat";
 import {
-  initiatePayment,
   initiateLifetimePayment,
   getSessionState,
   endSession,
@@ -54,9 +52,6 @@ import {
 } from "../services/profile";
 import { WELCOME_MESSAGE } from "../constants/prompts";
 import { UserProfile } from "../types";
-
-// TODO: add a proper short notification sound (message-received.mp3)
-// For now, sound is disabled - add the file to enable it
 
 interface DisplayMessage {
   id: string;
@@ -82,7 +77,6 @@ export const ChatScreen = () => {
   const [isRestoringSubscription, setIsRestoringSubscription] = useState(false);
 
   const flatListRef = useRef<FlatList>(null);
-  const soundRef = useRef<Audio.Sound | null>(null);
   const isMountedRef = useRef(true);
   const insets = useSafeAreaInsets();
 
@@ -91,36 +85,8 @@ export const ChatScreen = () => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
-      // cleanup sound
-      if (soundRef.current) {
-        soundRef.current.unloadAsync();
-      }
     };
   }, []);
-
-  // load sound on mount (disabled until proper sound file is added)
-  // useEffect(() => {
-  //   const loadSound = async () => {
-  //     try {
-  //       const { sound } = await Audio.Sound.createAsync(MESSAGE_SOUND)
-  //       soundRef.current = sound
-  //     } catch (error) {
-  //       console.warn('failed to load message sound:', error)
-  //     }
-  //   }
-  //   loadSound()
-  // }, [])
-
-  // play notification sound
-  const playMessageSound = async () => {
-    try {
-      if (soundRef.current) {
-        await soundRef.current.replayAsync();
-      }
-    } catch (error) {
-      console.warn("failed to play message sound:", error);
-    }
-  };
 
   useEffect(() => {
     const init = async () => {
@@ -172,38 +138,24 @@ export const ChatScreen = () => {
     setShowPayment(!session.isActive);
   };
 
-  const handlePayment = async (option: PaymentOption) => {
+  const handlePayment = async () => {
     setPaymentLoading(true);
     setPaymentError(undefined);
 
-    const result =
-      option === "lifetime"
-        ? await initiateLifetimePayment()
-        : await initiatePayment();
+    const result = await initiateLifetimePayment();
 
     setPaymentLoading(false);
 
     if (result.success && result.walletAddress) {
       // initialize backend with wallet address as user id
       await initializeBackend(result.walletAddress);
-
-      if (option === "lifetime") {
-        await grantLifetimeAccess();
-      }
+      await grantLifetimeAccess();
 
       setShowPayment(false);
       setHasActiveSession(true);
       startConversation();
     } else {
       setPaymentError(result.error || "Failed to get wallet address");
-      const session = getSessionState();
-      if (session.isActive) {
-        setHasActiveSession(true);
-        setTimeout(() => {
-          setShowPayment(false);
-          startConversation();
-        }, 2000);
-      }
     }
   };
 
@@ -222,7 +174,6 @@ export const ChatScreen = () => {
       timestamp: new Date(),
     };
     setMessages((prev) => [...prev, welcomeMessage]);
-    playMessageSound();
   };
 
   const handleSessionExpired = useCallback(async () => {
@@ -300,9 +251,6 @@ export const ChatScreen = () => {
       timestamp: new Date(),
     };
     setMessages((prev) => [...prev, assistantMessage]);
-
-    // play sound
-    playMessageSound();
 
     // scroll to bottom
     setTimeout(() => {
@@ -498,9 +446,6 @@ export const ChatScreen = () => {
       timestamp: new Date(),
     };
     setMessages((prev) => [...prev, assistantMessage]);
-
-    // play sound
-    playMessageSound();
 
     // scroll to bottom
     setTimeout(() => {

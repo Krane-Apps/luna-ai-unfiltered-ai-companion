@@ -5,9 +5,9 @@ import { View, StyleSheet, Animated } from 'react-native'
 import { Video, ResizeMode, AVPlaybackStatus } from 'expo-av'
 import { AvatarState } from '../types'
 
-// video asset imports
+// video asset imports (speaking reuses listening loop — no dedicated speaking asset in text-only mode)
 const videoAssets = {
-  speaking: require('../assets/luna-speaking.mp4'),
+  speaking: require('../assets/luna-listening.mp4'),
   thinking: require('../assets/luna-thinking.mp4'),
   listening: require('../assets/luna-listening.mp4')
 }

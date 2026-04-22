@@ -1,43 +1,17 @@
 // payment screen with full video background and pre-generated audio messages
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Animated, Linking } from 'react-native'
-import { useVideoPlayer, VideoView } from 'expo-video'
+import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Animated, Linking, Platform } from 'react-native'
+import { Video, ResizeMode } from 'expo-av'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { PAYMENT_CONFIG, ORIGINAL_LIFETIME_PRICE_SOL } from '../constants/config'
 import { getSOLPriceUSD, formatUSD } from '../services/price'
-import { audioService } from '../services/audio'
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window')
 
-// video assets
-const speakingVideos = [
-  require('../assets/luna-speaking-1.mp4'),
-  require('../assets/luna-speaking-2.mp4'),
-  require('../assets/luna-speaking-3.mp4')
-]
+const LISTENING_VIDEO = require('../assets/luna-listening.mp4')
 
-const videoAssets = {
-  listening: require('../assets/luna-listening.mp4'),
-  thinking: require('../assets/luna-thinking.mp4')
-}
-
-// pre-generated audio files (no API calls needed - saves costs)
-const audioAssets = [
-  require('../assets/audio/payment-message-1.mp3'),
-  require('../assets/audio/payment-message-2.mp3'),
-  require('../assets/audio/payment-message-3.mp3'),
-  require('../assets/audio/payment-message-4.mp3'),
-  require('../assets/audio/payment-message-5.mp3')
-]
-
-// get random speaking video
-const getRandomSpeakingVideo = () => {
-  const index = Math.floor(Math.random() * speakingVideos.length)
-  return speakingVideos[index]
-}
-
-// convincing messages luna will say (text for subtitles)
+// convincing messages shown as subtitles
 const CONVINCING_MESSAGES = [
   "Hey baby... I've been waiting for you. Don't you want to talk to me?",
   "I promise I'll make it worth your while. I'm all yours once you unlock me.",
@@ -46,12 +20,15 @@ const CONVINCING_MESSAGES = [
   "Just 0.01 SOL baby, and we can talk about anything. Anything at all."
 ]
 
-export type PaymentOption = 'single' | 'weekly' | 'lifetime'
+// how long each message stays on screen (ms)
+const MESSAGE_VISIBLE_MS = 5000
+// gap between fade-out and next message fade-in
+const MESSAGE_GAP_MS = 800
 
 interface PaymentModalProps {
   visible: boolean
   isLoading: boolean
-  onPay: (option: PaymentOption) => void
+  onPay: () => void
   onShowRefund?: () => void
   onRestoreSubscription?: () => void
   isRestoringSubscription?: boolean
@@ -68,17 +45,12 @@ export const PaymentModal = ({
   error
 }: PaymentModalProps) => {
   const [currentMessageIndex, setCurrentMessageIndex] = useState(0)
-  const [isSpeaking, setIsSpeaking] = useState(false)
-  const [selectedOption, setSelectedOption] = useState<PaymentOption>('lifetime')
   const [solPriceUSD, setSolPriceUSD] = useState<number | null>(null)
   const pulseAnim = useRef(new Animated.Value(1)).current
   const fadeAnim = useRef(new Animated.Value(0)).current
   const subtitleFadeAnim = useRef(new Animated.Value(1)).current
   const messageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const isPlayingRef = useRef(false)
   const isMountedRef = useRef(true)
-  const speakingVideoRef = useRef(getRandomSpeakingVideo())
-  const lastVideoSourceRef = useRef(videoAssets.listening)
   const insets = useSafeAreaInsets()
 
   // track mounted state for cleanup
@@ -89,50 +61,6 @@ export const PaymentModal = ({
     }
   }, [])
 
-  // single video player - use replace() method to change source
-  const player = useVideoPlayer(videoAssets.listening, (p) => {
-    p.loop = true
-    p.muted = true
-    p.play()
-  })
-
-  // change video source using replace() method - no player recreation
-  useEffect(() => {
-    if (!player) return
-
-    const newSource = isSpeaking ? speakingVideoRef.current : videoAssets.listening
-
-    // only replace if source actually changed
-    if (newSource !== lastVideoSourceRef.current) {
-      lastVideoSourceRef.current = newSource
-      try {
-        player.replace(newSource)
-        player.loop = true
-        player.muted = true
-        player.play()
-      } catch (e) {
-        // ignore errors during video transition
-        console.log('video replace error:', e)
-      }
-    }
-  }, [isSpeaking, player])
-
-  // pick new random speaking video when speaking starts
-  useEffect(() => {
-    if (isSpeaking) {
-      speakingVideoRef.current = getRandomSpeakingVideo()
-    }
-  }, [isSpeaking])
-
-  // ensure player keeps playing
-  useEffect(() => {
-    if (player) {
-      player.loop = true
-      player.muted = true
-      player.play()
-    }
-  }, [player])
-
   const clearMessageTimer = useCallback(() => {
     if (messageTimerRef.current) {
       clearTimeout(messageTimerRef.current)
@@ -140,11 +68,11 @@ export const PaymentModal = ({
     }
   }, [])
 
-  const playMessage = useCallback(async (index: number) => {
-    if (!visible || isPlayingRef.current || !isMountedRef.current) return
-    isPlayingRef.current = true
+  // cycle through messages: fade-in → hold → fade-out → next
+  const showMessage = useCallback((index: number) => {
+    if (!isMountedRef.current) return
 
-    // fade in subtitle
+    setCurrentMessageIndex(index)
     subtitleFadeAnim.setValue(0)
     Animated.timing(subtitleFadeAnim, {
       toValue: 1,
@@ -152,37 +80,26 @@ export const PaymentModal = ({
       useNativeDriver: true
     }).start()
 
-    setCurrentMessageIndex(index)
-    setIsSpeaking(true)
-
-    // use centralized audio service to prevent overlapping
-    await audioService.playAsset(audioAssets[index], () => {
+    messageTimerRef.current = setTimeout(() => {
       if (!isMountedRef.current) return
-
-      setIsSpeaking(false)
-      isPlayingRef.current = false
-
-      // fade out subtitle before next message
       Animated.timing(subtitleFadeAnim, {
         toValue: 0,
         duration: 500,
         useNativeDriver: true
-      }).start()
-
-      // schedule next message
-      messageTimerRef.current = setTimeout(() => {
-        if (isMountedRef.current) {
+      }).start(() => {
+        if (!isMountedRef.current) return
+        messageTimerRef.current = setTimeout(() => {
+          if (!isMountedRef.current) return
           const nextIndex = (index + 1) % CONVINCING_MESSAGES.length
-          playMessage(nextIndex)
-        }
-      }, 6000)
-    })
-  }, [visible, subtitleFadeAnim])
+          showMessage(nextIndex)
+        }, MESSAGE_GAP_MS)
+      })
+    }, MESSAGE_VISIBLE_MS)
+  }, [subtitleFadeAnim])
 
   // start when visible
   useEffect(() => {
     if (visible) {
-      isPlayingRef.current = false
       fadeAnim.setValue(0)
       Animated.timing(fadeAnim, {
         toValue: 1,
@@ -197,24 +114,18 @@ export const PaymentModal = ({
 
       const initialDelay = setTimeout(() => {
         if (isMountedRef.current) {
-          playMessage(0)
+          showMessage(0)
         }
-      }, 2000)
+      }, 1500)
 
       return () => {
         clearTimeout(initialDelay)
         clearMessageTimer()
-        audioService.stopAudio()
-        isPlayingRef.current = false
-        setIsSpeaking(false)
       }
     } else {
       clearMessageTimer()
-      audioService.stopAudio()
-      isPlayingRef.current = false
-      setIsSpeaking(false)
     }
-  }, [visible, playMessage, clearMessageTimer])
+  }, [visible, showMessage, clearMessageTimer])
 
   // pulse animation for pay button
   useEffect(() => {
@@ -240,15 +151,16 @@ export const PaymentModal = ({
 
   return (
     <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
-      {/* single video player - source changed via replace() */}
-      {player && (
-        <VideoView
-          player={player}
-          style={styles.video}
-          contentFit="cover"
-          nativeControls={false}
-        />
-      )}
+      {/* listening loop — muted video background */}
+      <Video
+        source={LISTENING_VIDEO}
+        style={styles.video}
+        resizeMode={ResizeMode.COVER}
+        shouldPlay
+        isLooping
+        isMuted
+      />
+
 
       {/* dark overlay */}
       <View style={styles.overlay} />
@@ -267,13 +179,6 @@ export const PaymentModal = ({
             <Text style={styles.subtitle}>
               "{CONVINCING_MESSAGES[currentMessageIndex]}"
             </Text>
-            {isSpeaking && (
-              <View style={styles.speakingIndicator}>
-                <View style={styles.speakingDot} />
-                <View style={[styles.speakingDot, styles.speakingDotDelay1]} />
-                <View style={[styles.speakingDot, styles.speakingDotDelay2]} />
-              </View>
-            )}
           </Animated.View>
         </View>
 
@@ -285,19 +190,11 @@ export const PaymentModal = ({
             </View>
           )}
 
-          {/* 2 options: 30 min session + lifetime (selected by default) */}
+          {/* lifetime access - only pricing tier */}
           <View style={styles.optionsContainer}>
-            {/* lifetime - highlighted and selected by default */}
-            <TouchableOpacity
-              style={[styles.optionCard, styles.optionCardLifetime, selectedOption === 'lifetime' && styles.optionCardLifetimeSelected]}
-              onPress={() => setSelectedOption('lifetime')}
-              activeOpacity={0.8}
-            >
+            <View style={[styles.optionCard, styles.optionCardLifetime]}>
               <View style={styles.discountBadge}>
-                <Text style={styles.discountBadgeText}>60% OFF</Text>
-              </View>
-              <View style={styles.optionRadioLifetime}>
-                {selectedOption === 'lifetime' && <View style={styles.optionRadioInnerLifetime} />}
+                <Text style={styles.discountBadgeText}>50% OFF</Text>
               </View>
               <View style={styles.optionInfo}>
                 <Text style={styles.optionTitleLifetime}>Lifetime Access</Text>
@@ -311,48 +208,23 @@ export const PaymentModal = ({
                   <Text style={styles.optionCurrencyLifetime}>SOL</Text>
                 </View>
               </View>
-            </TouchableOpacity>
-
-            {/* 30 min session */}
-            <TouchableOpacity
-              style={[styles.optionCard, selectedOption === 'single' && styles.optionCardSelected]}
-              onPress={() => setSelectedOption('single')}
-              activeOpacity={0.8}
-            >
-              <View style={styles.optionRadio}>
-                {selectedOption === 'single' && <View style={styles.optionRadioInner} />}
-              </View>
-              <View style={styles.optionInfo}>
-                <Text style={styles.optionTitle}>30 Min Session</Text>
-                <Text style={styles.optionDesc}>Try it out first</Text>
-              </View>
-              <View style={styles.optionPriceBox}>
-                <Text style={styles.optionPrice}>{PAYMENT_CONFIG.singleChatPriceSOL}</Text>
-                <Text style={styles.optionCurrency}>SOL</Text>
-              </View>
-            </TouchableOpacity>
+            </View>
           </View>
 
           {/* CTA button */}
           <Animated.View style={{ transform: [{ scale: pulseAnim }], width: '100%', marginTop: 12 }}>
             <TouchableOpacity
               style={[styles.payButton, isLoading && styles.payButtonDisabled]}
-              onPress={() => onPay(selectedOption)}
+              onPress={onPay}
               disabled={isLoading}
               activeOpacity={0.8}
             >
               <Text style={styles.payButtonText}>
-                {isLoading ? 'Connecting...' : selectedOption === 'lifetime'
-                  ? `Unlock Forever - ${PAYMENT_CONFIG.lifetimePriceSOL} SOL`
-                  : `Pay ${PAYMENT_CONFIG.singleChatPriceSOL} SOL`
-                }
+                {isLoading ? 'Connecting...' : `Unlock Forever - ${PAYMENT_CONFIG.lifetimePriceSOL} SOL`}
               </Text>
               {solPriceUSD && (
                 <Text style={styles.payButtonUSD}>
-                  {formatUSD(
-                    selectedOption === 'lifetime' ? PAYMENT_CONFIG.lifetimePriceSOL : PAYMENT_CONFIG.singleChatPriceSOL,
-                    solPriceUSD
-                  )}
+                  {formatUSD(PAYMENT_CONFIG.lifetimePriceSOL, solPriceUSD)}
                 </Text>
               )}
             </TouchableOpacity>
@@ -447,23 +319,6 @@ const styles = StyleSheet.create({
     lineHeight: 30,
     textAlign: 'left'
   },
-  speakingIndicator: {
-    flexDirection: 'row',
-    marginTop: 16,
-    gap: 6
-  },
-  speakingDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#ff69b4'
-  },
-  speakingDotDelay1: {
-    opacity: 0.7
-  },
-  speakingDotDelay2: {
-    opacity: 0.4
-  },
   bottomSection: {
     paddingBottom: 16
   },
@@ -492,69 +347,16 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: 'transparent'
   },
-  optionCardSelected: {
-    borderColor: '#ff69b4',
-    backgroundColor: 'rgba(255, 105, 180, 0.25)'
-  },
-  optionRadio: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.6)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12
-  },
-  optionRadioInner: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#ff69b4'
-  },
   optionInfo: {
     flex: 1
   },
-  optionTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#fff'
-  },
-  optionDesc: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.6)',
-    marginTop: 1
-  },
-  optionPriceBox: {
-    flexDirection: 'row',
-    alignItems: 'baseline'
-  },
-  optionPrice: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: '#fff'
-  },
-  optionCurrency: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: 'rgba(255, 255, 255, 0.7)',
-    marginLeft: 4
-  },
-  // lifetime card - highlighted
+  // lifetime card - solid, no elevation (android elevation casts black shadow)
   optionCardLifetime: {
-    backgroundColor: 'rgba(255, 105, 180, 0.2)',
-    borderColor: 'rgba(255, 105, 180, 0.5)',
+    backgroundColor: 'rgba(40, 15, 30, 0.95)',
+    borderColor: '#ff69b4',
+    borderWidth: 2,
     position: 'relative',
     paddingTop: 18
-  },
-  optionCardLifetimeSelected: {
-    borderColor: '#ff69b4',
-    backgroundColor: 'rgba(255, 105, 180, 0.35)',
-    shadowColor: '#ff69b4',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.5,
-    shadowRadius: 12,
-    elevation: 6
   },
   discountBadge: {
     position: 'absolute',
@@ -590,22 +392,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'baseline'
   },
-  optionRadioLifetime: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    borderWidth: 3,
-    borderColor: '#ff69b4',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12
-  },
-  optionRadioInnerLifetime: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: '#ff69b4'
-  },
   optionTitleLifetime: {
     fontSize: 16,
     fontWeight: '800',
@@ -632,11 +418,12 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     borderRadius: 26,
     alignItems: 'center',
+    // ios-only colored glow; android elevation would render black over the card above
     shadowColor: '#ff69b4',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.5,
+    shadowOpacity: Platform.OS === 'ios' ? 0.5 : 0,
     shadowRadius: 12,
-    elevation: 8
+    elevation: 0
   },
   payButtonDisabled: {
     opacity: 0.7
