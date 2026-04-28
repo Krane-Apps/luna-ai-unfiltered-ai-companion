@@ -26,30 +26,21 @@ const getTreasuryWallet = (): string => {
 // api keys from environment variables
 export const HF_TOKEN = ENV_HF_TOKEN || ''
 
-// tts model
-export const TTS_MODEL = 'hexgrad/Kokoro-82M'
-
 // dev mode - shows bypass button and uses minimal payment amounts for testing
 // set to true for testing, false for production release
 export const DEV_MODE = false // <-- change to false before publishing to store
 
-// payment configuration - 2-tier pricing (30 min + lifetime)
-// lifetime is 50% off for limited time (original 1 SOL -> 0.5 SOL)
-// uses minimal amounts in dev mode for testing
-export const ORIGINAL_LIFETIME_PRICE_SOL = DEV_MODE ? 0.006 : 2.5  // original price before discount
+// payment configuration - lifetime access only
+// limited-time 50% off: original 0.5 SOL -> 0.25 SOL
+export const ORIGINAL_LIFETIME_PRICE_SOL = DEV_MODE ? 0.006 : 0.5  // original price before discount
 export const PAYMENT_CONFIG: PaymentConfig = {
-  singleChatPriceSOL: DEV_MODE ? 0.001 : 0.15,    // ~$15, 30 min session (0.001 in dev)
-  lifetimePriceSOL: DEV_MODE ? 0.003 : 1.0,       // 60% OFF! was 2.5 SOL (0.003 in dev)
-  sessionDurationMinutes: 30,   // for single chat
+  lifetimePriceSOL: DEV_MODE ? 0.003 : 0.25,
   treasuryWallet: getTreasuryWallet()
 }
 
 // solana network
 export const SOLANA_RPC_URL = 'https://api.mainnet-beta.solana.com'
 export const SOLANA_CLUSTER = 'mainnet-beta'
-
-// grace period when transaction fails (in minutes)
-export const GRACE_PERIOD_MINUTES = 15
 
 // backend api url
 // set in .env file, defaults to localhost for development

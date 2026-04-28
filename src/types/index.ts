@@ -22,9 +22,7 @@ export interface SessionState {
 }
 
 export interface PaymentConfig {
-  singleChatPriceSOL: number // 30 min session
-  lifetimePriceSOL: number // lifetime access (best value)
-  sessionDurationMinutes: number // for single chat
+  lifetimePriceSOL: number // lifetime access (only pricing tier)
   treasuryWallet: string
 }
 

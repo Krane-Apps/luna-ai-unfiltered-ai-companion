@@ -14,40 +14,17 @@ import {
   Platform
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { useVideoPlayer, VideoView } from 'expo-video'
+import { Video, ResizeMode } from 'expo-av'
 import { UserProfile } from '../types'
 import { createEmptyProfile, saveUserProfile } from '../services/profile'
-import { generateSpeech } from '../services/tts'
-import { audioService } from '../services/audio'
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window')
 
-// pre-recorded audio for first 3 screens (no personalization needed)
-// to enable, add these files and uncomment the requires:
-// - assets/audio/onboarding-intro.mp3: "hey baby, before we start, I want you to know your privacy is safe with me"
-// - assets/audio/onboarding-ask-name.mp3: "now that's out of the way... what should I call you, baby?"
-const PRE_RECORDED_AUDIO: { intro: any; askName: any } = {
-  intro: null,    // require('../assets/audio/onboarding-intro.mp3')
-  askName: null   // require('../assets/audio/onboarding-ask-name.mp3')
-}
+const LISTENING_VIDEO = require('../assets/luna-listening.mp4')
 
-// video assets
-const speakingVideos = [
-  require('../assets/luna-speaking-1.mp4'),
-  require('../assets/luna-speaking-2.mp4'),
-  require('../assets/luna-speaking-3.mp4')
-]
-
-const videoAssets = {
-  listening: require('../assets/luna-listening.mp4'),
-  thinking: require('../assets/luna-thinking.mp4')
-}
-
-// get random speaking video
-const getRandomSpeakingVideo = () => {
-  const index = Math.floor(Math.random() * speakingVideos.length)
-  return speakingVideos[index]
-}
+// how long each subtitle stays visible (ms) — reading time for users
+const SUBTITLE_READ_MS = 3500
+const SUBTITLE_FADE_OUT_MS = 500
 
 // interest options for multi-select
 const INTEREST_OPTIONS = [
@@ -90,187 +67,31 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
   const [step, setStep] = useState(0)
   const [profile, setProfile] = useState<UserProfile>(createEmptyProfile())
   const [error, setError] = useState('')
-  const [isSpeaking, setIsSpeaking] = useState(false)
   const [currentSubtitle, setCurrentSubtitle] = useState('')
   const fadeAnim = useRef(new Animated.Value(1)).current
   const subtitleFadeAnim = useRef(new Animated.Value(0)).current
   const insets = useSafeAreaInsets()
   const isMountedRef = useRef(true)
-  const speakingVideoRef = useRef(getRandomSpeakingVideo())
-  const lastVideoSourceRef = useRef(videoAssets.listening)
   const hasPlayedIntroRef = useRef(false)
+  const subtitleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // pre-generated TTS audio cache (generated after name entry)
-  const preGeneratedAudioRef = useRef<Record<string, string>>({})
-  const isPreGeneratingRef = useRef(false)
-  const hasStartedPreGenRef = useRef(false) // prevent duplicate pre-gen calls
-
-  // initialize audio service
   useEffect(() => {
-    audioService.initialize()
     isMountedRef.current = true
     return () => {
       isMountedRef.current = false
-      audioService.stopAudio()
+      if (subtitleTimerRef.current) clearTimeout(subtitleTimerRef.current)
     }
   }, [])
 
-  const player = useVideoPlayer(videoAssets.listening, (p) => {
-    p.loop = true
-    p.muted = true
-    p.play()
-  })
-
-  // change video based on speaking state
-  useEffect(() => {
-    if (!player) return
-
-    const newSource = isSpeaking ? speakingVideoRef.current : videoAssets.listening
-
-    if (newSource !== lastVideoSourceRef.current) {
-      lastVideoSourceRef.current = newSource
-      try {
-        player.replace(newSource)
-        player.loop = true
-        player.muted = true
-        player.play()
-      } catch (e) {
-        console.log('video replace error:', e)
-      }
-    }
-  }, [isSpeaking, player])
-
-  // play intro message on first load - uses pre-recorded if available, TTS otherwise
-  useEffect(() => {
-    if (!hasPlayedIntroRef.current) {
-      hasPlayedIntroRef.current = true
-      const introMessage = "Hey baby, before we start, I want you to know your privacy is safe with me."
-      setTimeout(() => {
-        if (PRE_RECORDED_AUDIO.intro) {
-          playPreRecordedAudio(PRE_RECORDED_AUDIO.intro, introMessage)
-        } else {
-          speakMessage(introMessage)
-        }
-      }, 1000)
-    }
-  }, [])
-
-  // pre-generate all personalized TTS messages after user enters their name
-  const preGeneratePersonalizedAudio = async (userName: string) => {
-    // strict duplicate prevention
-    if (hasStartedPreGenRef.current) {
-      console.log('[TTS] pre-gen already started, skipping')
-      return
-    }
-    hasStartedPreGenRef.current = true
-    isPreGeneratingRef.current = true
-
-    console.log('[TTS] starting pre-generation for:', userName)
-
-    const messages = [
-      { key: 'step2', text: `${userName}... I love that name. Now I need to make sure you're old enough for me.` },
-      { key: 'step3', text: `Perfect, ${userName}. Now tell me, what are you looking for with me?` },
-      { key: 'step4', text: `I like that, ${userName}. What topics get you excited? Pick a few for me.` },
-      { key: 'step5', text: `Great choices, ${userName}. Now, how playful do you want me to be with you?` },
-      { key: 'step6', text: `Got it, ${userName}. Just a couple more questions... are you seeing anyone?` },
-      { key: 'step7', text: `Thanks for sharing, ${userName}. When do you usually like to chat?` },
-      { key: 'step8', text: `Almost done, ${userName}. Is there anything you'd rather not talk about?` },
-      { key: 'finish', text: `Perfect, ${userName}! I can't wait to get to know you better. Let's chat!` }
-    ]
-
-    // generate all in parallel for speed
-    const results = await Promise.all(
-      messages.map(async ({ key, text }) => {
-        const audioUrl = await generateSpeech(text)
-        console.log(`[TTS] pre-gen complete: ${key}`)
-        return { key, audioUrl }
-      })
-    )
-
-    // store results
-    results.forEach(({ key, audioUrl }) => {
-      if (audioUrl) {
-        preGeneratedAudioRef.current[key] = audioUrl
-      }
-    })
-    isPreGeneratingRef.current = false
-    console.log('[TTS] all pre-gen complete:', Object.keys(preGeneratedAudioRef.current).length, 'audio files ready')
-  }
-
-  // play pre-recorded audio file with subtitle - uses centralized audioService
-  const playPreRecordedAudio = async (audioAsset: any, subtitle: string) => {
+  // show subtitle with fade-in, auto fade-out after read duration
+  const showSubtitle = useCallback((message: string) => {
     if (!isMountedRef.current) return
 
-    console.log('[Audio] playPreRecordedAudio:', subtitle.substring(0, 40) + '...')
-    setCurrentSubtitle(subtitle)
-    subtitleFadeAnim.setValue(0)
-    Animated.timing(subtitleFadeAnim, {
-      toValue: 1,
-      duration: 300,
-      useNativeDriver: true
-    }).start()
-
-    speakingVideoRef.current = getRandomSpeakingVideo()
-    setIsSpeaking(true)
-
-    await audioService.playAsset(audioAsset, () => {
-      if (isMountedRef.current) {
-        setIsSpeaking(false)
-        setTimeout(() => {
-          Animated.timing(subtitleFadeAnim, {
-            toValue: 0,
-            duration: 500,
-            useNativeDriver: true
-          }).start(() => {
-            if (isMountedRef.current) setCurrentSubtitle('')
-          })
-        }, 1000)
-      }
-    })
-  }
-
-  // play pre-generated TTS audio with subtitle
-  const playPreGeneratedAudio = async (key: string, subtitle: string) => {
-    const audioUrl = preGeneratedAudioRef.current[key]
-    console.log(`[Audio] playPreGeneratedAudio key=${key}, hasAudio=${!!audioUrl}`)
-    if (audioUrl) {
-      // use existing speakMessage logic but with cached URL
-      setCurrentSubtitle(subtitle)
-      subtitleFadeAnim.setValue(0)
-      Animated.timing(subtitleFadeAnim, {
-        toValue: 1,
-        duration: 300,
-        useNativeDriver: true
-      }).start()
-
-      speakingVideoRef.current = getRandomSpeakingVideo()
-      setIsSpeaking(true)
-      await audioService.playAudio(audioUrl, () => {
-        if (isMountedRef.current) {
-          setIsSpeaking(false)
-          setTimeout(() => {
-            Animated.timing(subtitleFadeAnim, {
-              toValue: 0,
-              duration: 500,
-              useNativeDriver: true
-            }).start(() => {
-              if (isMountedRef.current) setCurrentSubtitle('')
-            })
-          }, 1000)
-        }
-      })
-    } else {
-      // fallback to live TTS if pre-generated not available
-      console.log(`[Audio] pre-gen not ready for ${key}, falling back to live TTS`)
-      speakMessage(subtitle)
+    if (subtitleTimerRef.current) {
+      clearTimeout(subtitleTimerRef.current)
+      subtitleTimerRef.current = null
     }
-  }
 
-  // speak a message with TTS
-  const speakMessage = useCallback(async (message: string) => {
-    if (!isMountedRef.current) return
-
-    console.log('[Audio] speakMessage (live TTS):', message.substring(0, 40) + '...')
     setCurrentSubtitle(message)
     subtitleFadeAnim.setValue(0)
     Animated.timing(subtitleFadeAnim, {
@@ -279,41 +100,28 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
       useNativeDriver: true
     }).start()
 
-    const audioUrl = await generateSpeech(message)
-
-    if (!isMountedRef.current) return
-
-    if (audioUrl) {
-      speakingVideoRef.current = getRandomSpeakingVideo()
-      setIsSpeaking(true)
-      await audioService.playAudio(audioUrl, () => {
-        if (isMountedRef.current) {
-          setIsSpeaking(false)
-          // fade out subtitle after speaking
-          setTimeout(() => {
-            Animated.timing(subtitleFadeAnim, {
-              toValue: 0,
-              duration: 500,
-              useNativeDriver: true
-            }).start(() => {
-              if (isMountedRef.current) setCurrentSubtitle('')
-            })
-          }, 1000)
-        }
+    subtitleTimerRef.current = setTimeout(() => {
+      if (!isMountedRef.current) return
+      Animated.timing(subtitleFadeAnim, {
+        toValue: 0,
+        duration: SUBTITLE_FADE_OUT_MS,
+        useNativeDriver: true
+      }).start(() => {
+        if (isMountedRef.current) setCurrentSubtitle('')
       })
-    } else {
-      // no audio - show subtitle for a few seconds
-      setTimeout(() => {
-        Animated.timing(subtitleFadeAnim, {
-          toValue: 0,
-          duration: 500,
-          useNativeDriver: true
-        }).start(() => {
-          if (isMountedRef.current) setCurrentSubtitle('')
-        })
-      }, 3000)
-    }
+    }, SUBTITLE_READ_MS)
   }, [subtitleFadeAnim])
+
+  // intro subtitle on first load
+  useEffect(() => {
+    if (!hasPlayedIntroRef.current) {
+      hasPlayedIntroRef.current = true
+      const introMessage = "Hey baby, before we start, I want you to know your privacy is safe with me."
+      setTimeout(() => {
+        showSubtitle(introMessage)
+      }, 1000)
+    }
+  }, [showSubtitle])
 
   // personalized messages for each step transition
   const getPersonalizedMessage = (fromStep: number, toStep: number): string | null => {
@@ -463,20 +271,8 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
   const nextStep = async () => {
     if (!validateStep()) return
 
-    console.log('[Onboarding] nextStep called, current step:', step)
-
-    // stop any current audio
-    audioService.stopAudio()
-    setIsSpeaking(false)
-
     const currentStep = step
     const nextStepNum = step + 1
-
-    // after entering name (step 1), start pre-generating personalized audio
-    if (currentStep === 1 && profile.userName && !hasStartedPreGenRef.current) {
-      console.log('[Onboarding] triggering pre-gen after name entry')
-      preGeneratePersonalizedAudio(profile.userName)
-    }
 
     // animate transition
     Animated.timing(fadeAnim, {
@@ -485,7 +281,6 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
       useNativeDriver: true
     }).start(() => {
       if (currentStep < questions.length - 1) {
-        console.log('[Onboarding] transitioning to step:', nextStepNum)
         setStep(nextStepNum)
 
         fadeAnim.setValue(0)
@@ -495,86 +290,14 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
           useNativeDriver: true
         }).start()
 
-        // play appropriate audio based on step
         setTimeout(() => {
-          playStepAudio(currentStep, nextStepNum)
+          const subtitle = getPersonalizedMessage(currentStep, nextStepNum)
+          if (subtitle) showSubtitle(subtitle)
         }, 500)
       } else {
-        // complete onboarding - transition immediately, play audio in background
-        console.log('[Onboarding] completing onboarding, transitioning immediately')
-
-        // play finish audio in background (don't block)
-        const name = profile.userName || 'baby'
-        const finishMessage = `Perfect, ${name}! I can't wait to get to know you better. Let's chat!`
-
-        if (preGeneratedAudioRef.current['finish']) {
-          playPreGeneratedAudio('finish', finishMessage) // fire and forget
-        }
-        // skip TTS fallback on finish - just transition quickly
-
         finishOnboarding()
       }
     })
-  }
-
-  // play audio for step transition - uses pre-recorded for early steps, pre-generated for later
-  const playStepAudio = (fromStep: number, toStep: number) => {
-    console.log(`[Audio] playStepAudio ${fromStep} → ${toStep}`)
-    const name = profile.userName || 'baby'
-
-    // step 0 → 1: use pre-recorded "ask name" audio (or TTS fallback)
-    if (fromStep === 0 && toStep === 1) {
-      const askNameMsg = "Now that's out of the way... what should I call you, baby?"
-      if (PRE_RECORDED_AUDIO.askName) {
-        playPreRecordedAudio(PRE_RECORDED_AUDIO.askName, askNameMsg)
-      } else {
-        speakMessage(askNameMsg)
-      }
-      return
-    }
-
-    // step 1 → 2: use pre-generated (has name) - key 'step2'
-    if (fromStep === 1 && toStep === 2) {
-      const msg = `${name}... I love that name. Now I need to make sure you're old enough for me.`
-      playPreGeneratedAudio('step2', msg)
-      return
-    }
-
-    // step 2 → 3: key 'step3'
-    if (fromStep === 2 && toStep === 3) {
-      playPreGeneratedAudio('step3', `Perfect, ${name}. Now tell me, what are you looking for with me?`)
-      return
-    }
-
-    // step 3 → 4: key 'step4'
-    if (fromStep === 3 && toStep === 4) {
-      playPreGeneratedAudio('step4', `I like that, ${name}. What topics get you excited? Pick a few for me.`)
-      return
-    }
-
-    // step 4 → 5: key 'step5'
-    if (fromStep === 4 && toStep === 5) {
-      playPreGeneratedAudio('step5', `Great choices, ${name}. Now, how playful do you want me to be with you?`)
-      return
-    }
-
-    // step 5 → 6: key 'step6'
-    if (fromStep === 5 && toStep === 6) {
-      playPreGeneratedAudio('step6', `Got it, ${name}. Just a couple more questions... are you seeing anyone?`)
-      return
-    }
-
-    // step 6 → 7: key 'step7'
-    if (fromStep === 6 && toStep === 7) {
-      playPreGeneratedAudio('step7', `Thanks for sharing, ${name}. When do you usually like to chat?`)
-      return
-    }
-
-    // step 7 → 8: key 'step8'
-    if (fromStep === 7 && toStep === 8) {
-      playPreGeneratedAudio('step8', `Almost done, ${name}. Is there anything you'd rather not talk about?`)
-      return
-    }
   }
 
   const prevStep = () => {
@@ -764,14 +487,14 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
 
   return (
     <View style={styles.container}>
-      {player && (
-        <VideoView
-          player={player}
-          style={styles.video}
-          contentFit="cover"
-          nativeControls={false}
-        />
-      )}
+      <Video
+        source={LISTENING_VIDEO}
+        style={styles.video}
+        resizeMode={ResizeMode.COVER}
+        shouldPlay
+        isLooping
+        isMuted
+      />
 
       <View style={styles.overlay} />
 
@@ -793,17 +516,10 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
           contentContainerStyle={styles.scrollContentContainer}
           keyboardShouldPersistTaps="handled"
         >
-          {/* luna's spoken message */}
+          {/* luna's message */}
           {currentSubtitle !== '' && (
             <Animated.View style={[styles.subtitleContainer, { opacity: subtitleFadeAnim }]}>
               <Text style={styles.subtitleText}>"{currentSubtitle}"</Text>
-              {isSpeaking && (
-                <View style={styles.speakingIndicator}>
-                  <View style={styles.speakingDot} />
-                  <View style={[styles.speakingDot, styles.speakingDotDelay1]} />
-                  <View style={[styles.speakingDot, styles.speakingDotDelay2]} />
-                </View>
-              )}
             </Animated.View>
           )}
 
@@ -898,23 +614,6 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontStyle: 'italic',
     lineHeight: 24
-  },
-  speakingIndicator: {
-    flexDirection: 'row',
-    marginTop: 12,
-    gap: 6
-  },
-  speakingDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#ff69b4'
-  },
-  speakingDotDelay1: {
-    opacity: 0.7
-  },
-  speakingDotDelay2: {
-    opacity: 0.4
   },
   questionContainer: {
     alignItems: 'center'

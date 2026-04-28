@@ -32,9 +32,6 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
-    "plugins": [
-      "expo-video"
-    ],
     "extra": {
       "eas": {
         "projectId": ""
