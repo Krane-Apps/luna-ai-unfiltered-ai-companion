@@ -6,7 +6,7 @@ import * as FileSystem from 'expo-file-system/legacy'
 import { isNetworkError, showNetworkError } from './api'
 
 // use qwen vision model via openai-compatible api
-const VISION_MODEL = 'Qwen/Qwen2.5-VL-7B-Instruct'
+const VISION_MODEL = 'meta-llama/Llama-3.2-11B-Vision-Instruct'
 
 let visionClient: OpenAI | null = null
 

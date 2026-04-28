@@ -5,14 +5,20 @@ import * as Notifications from 'expo-notifications'
 import * as Device from 'expo-device'
 import { updateUserDeviceToken } from './firebase'
 
+let _muted = false
+
 // configure notification behavior
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true
+    shouldShowAlert: !_muted,
+    shouldPlaySound: !_muted,
+    shouldSetBadge: !_muted,
   })
 })
+
+export const setNotificationsMuted = (muted: boolean) => {
+  _muted = muted
+}
 
 // request permission for push notifications
 export const requestNotificationPermissions = async (): Promise<boolean> => {

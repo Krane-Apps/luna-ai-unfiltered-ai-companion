@@ -28,7 +28,7 @@ export const HF_TOKEN = ENV_HF_TOKEN || ''
 
 // dev mode - shows bypass button and uses minimal payment amounts for testing
 // set to true for testing, false for production release
-export const DEV_MODE = false // <-- change to false before publishing to store
+export const DEV_MODE = true // <-- change to false before publishing to store
 
 // payment configuration - lifetime access only
 // limited-time 50% off: original 0.5 SOL -> 0.25 SOL
