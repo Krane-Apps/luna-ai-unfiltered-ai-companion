@@ -234,26 +234,28 @@ export const generateChatResponseWithImage = async (
     const imageDescription = await analyzeImage(imageUri)
     console.log('Image description:', imageDescription)
 
-    // create message content that includes the image context
-    const messageContent = userMessage
-      ? `[User sent an image: ${imageDescription}] ${userMessage}`
-      : `[User sent an image: ${imageDescription}] What do you think?`
+    // instruction sent to the model — never shown to the user
+    const imageContext = `[Image received — Luna can see: "${imageDescription}". React naturally to what you see, comment on it flirtatiously or warmly, and engage with the content. Do NOT say you cannot see images.]`
+    const apiContent = userMessage ? `${imageContext} ${userMessage}` : imageContext
 
-    // add to chat history with image uri for display
+    // display content stored in history — just the user's text (or empty for image-only)
+    const displayContent = userMessage || ''
+
     chatHistory.push({
       role: 'user',
-      content: messageContent,
+      content: displayContent,
       imageUri: imageUri
     })
-    saveMessageToFirebaseBackend('user', messageContent)
+    saveMessageToFirebaseBackend('user', displayContent)
 
     console.log('Sending request to HuggingFace Router...')
 
-    // prepare messages for api (without image fields)
-    const apiMessages = chatHistory.map(m => ({
-      role: m.role,
-      content: m.content
-    }))
+    // build api messages: replace the last user entry with the instruction-enriched content
+    const apiMessages = chatHistory.map((m, i) =>
+      i === chatHistory.length - 1 && m.role === 'user'
+        ? { role: m.role, content: apiContent }
+        : { role: m.role, content: m.content }
+    )
 
     const response = await client.chat.completions.create({
       model: CHAT_MODEL,

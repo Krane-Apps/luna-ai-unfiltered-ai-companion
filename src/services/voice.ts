@@ -26,6 +26,40 @@ export const startRecording = async (): Promise<boolean> => {
   }
 }
 
+export const pauseRecording = async (): Promise<boolean> => {
+  if (!recording) return false
+  try {
+    await recording.pauseAsync()
+    return true
+  } catch (e) {
+    console.error('pauseRecording error:', e)
+    return false
+  }
+}
+
+export const resumeRecording = async (): Promise<boolean> => {
+  if (!recording) return false
+  try {
+    await recording.startAsync()
+    return true
+  } catch (e) {
+    console.error('resumeRecording error:', e)
+    return false
+  }
+}
+
+export const cancelRecording = async (): Promise<void> => {
+  if (!recording) return
+  try {
+    await recording.stopAndUnloadAsync()
+    await Audio.setAudioModeAsync({ allowsRecordingIOS: false })
+  } catch (e) {
+    console.error('cancelRecording error:', e)
+  } finally {
+    recording = null
+  }
+}
+
 export const stopRecording = async (): Promise<string | null> => {
   if (!recording) return null
   try {
