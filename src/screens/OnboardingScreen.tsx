@@ -1,30 +1,29 @@
 // onboarding screen to collect user preferences for personalized conversations
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import React, { useState, useRef, useEffect, useCallback } from 'react'
 import {
   View,
   Text,
   TextInput,
   TouchableOpacity,
+  Pressable,
   StyleSheet,
   Dimensions,
   Animated,
   ScrollView,
   KeyboardAvoidingView,
-  Platform
+  Platform,
+  Easing,
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Video, ResizeMode } from 'expo-av'
+import { Ionicons } from '@expo/vector-icons'
 import { UserProfile } from '../types'
 import { createEmptyProfile, saveUserProfile } from '../services/profile'
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window')
 
 const LISTENING_VIDEO = require('../assets/luna-listening.mp4')
-
-// how long each subtitle stays visible (ms) — reading time for users
-const SUBTITLE_READ_MS = 3500
-const SUBTITLE_FADE_OUT_MS = 500
 
 // interest options for multi-select
 const INTEREST_OPTIONS = [
@@ -48,6 +47,102 @@ const RELATIONSHIP_OPTIONS = [
   'Rather not say'
 ]
 
+// privacy promise icons + copy — extracted so the bullet list can stagger-fade
+const PRIVACY_ITEMS: { icon: keyof typeof Ionicons.glyphMap; title: string; desc: string }[] = [
+  { icon: 'phone-portrait-outline', title: 'Messages stay on your phone', desc: 'Your chat history never leaves your device.' },
+  { icon: 'shield-checkmark-outline', title: 'No data collection', desc: "We don't store or send your conversations anywhere." },
+  { icon: 'lock-closed-outline', title: 'Your secrets are safe', desc: 'Everything you share stays between us.' },
+]
+
+// One privacy bullet that fades + slides in with a delay so the three cascade.
+const PrivacyItem = ({
+  icon,
+  title,
+  desc,
+  delay,
+}: {
+  icon: keyof typeof Ionicons.glyphMap
+  title: string
+  desc: string
+  delay: number
+}) => {
+  const opacity = useRef(new Animated.Value(0)).current
+  const translateX = useRef(new Animated.Value(-16)).current
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(opacity, {
+        toValue: 1,
+        duration: 360,
+        delay,
+        useNativeDriver: true,
+      }),
+      Animated.spring(translateX, {
+        toValue: 0,
+        delay,
+        friction: 9,
+        tension: 70,
+        useNativeDriver: true,
+      }),
+    ]).start()
+  }, [])
+
+  return (
+    <Animated.View
+      style={[styles.privacyItem, { opacity, transform: [{ translateX }] }]}
+    >
+      <View style={styles.privacyIcon}>
+        <Ionicons name={icon} size={18} color="#4ade80" />
+      </View>
+      <View style={styles.privacyTextContainer}>
+        <Text style={styles.privacyTitle}>{title}</Text>
+        <Text style={styles.privacyDesc}>{desc}</Text>
+      </View>
+    </Animated.View>
+  )
+}
+
+// Press-springy primary button (matches the rest of the app's motion language)
+const SpringButton = ({
+  label,
+  onPress,
+  style,
+  textStyle,
+}: {
+  label: string
+  onPress: () => void
+  style?: any
+  textStyle?: any
+}) => {
+  const scale = useRef(new Animated.Value(1)).current
+  return (
+    <Pressable
+      onPressIn={() =>
+        Animated.spring(scale, {
+          toValue: 0.96,
+          friction: 6,
+          tension: 280,
+          useNativeDriver: true,
+        }).start()
+      }
+      onPressOut={() =>
+        Animated.spring(scale, {
+          toValue: 1,
+          friction: 4,
+          tension: 120,
+          useNativeDriver: true,
+        }).start()
+      }
+      onPress={onPress}
+      style={{ flex: style?.flex ?? 1 }}
+    >
+      <Animated.View style={[style, { transform: [{ scale }] }]}>
+        <Text style={textStyle}>{label}</Text>
+      </Animated.View>
+    </Pressable>
+  )
+}
+
 // preferred time options
 const TIME_OPTIONS = [
   'Mornings',
@@ -70,6 +165,8 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
   const [currentSubtitle, setCurrentSubtitle] = useState('')
   const fadeAnim = useRef(new Animated.Value(1)).current
   const subtitleFadeAnim = useRef(new Animated.Value(0)).current
+  // animated progress bar — interpolates 0..1 to a percentage width
+  const progressAnim = useRef(new Animated.Value(0)).current
   const insets = useSafeAreaInsets()
   const isMountedRef = useRef(true)
   const hasPlayedIntroRef = useRef(false)
@@ -83,7 +180,10 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
     }
   }, [])
 
-  // show subtitle with fade-in, auto fade-out after read duration
+  // show subtitle with fade-in. Persistent for the current step — it stays
+  // until a new step's transition message replaces it (or the user is past
+  // the last step that has one). The previous auto-hide-after-3.5s behavior
+  // left a visible layout hole on the privacy screen.
   const showSubtitle = useCallback((message: string) => {
     if (!isMountedRef.current) return
 
@@ -92,25 +192,24 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
       subtitleTimerRef.current = null
     }
 
-    setCurrentSubtitle(message)
-    subtitleFadeAnim.setValue(0)
-    Animated.timing(subtitleFadeAnim, {
-      toValue: 1,
-      duration: 300,
-      useNativeDriver: true
-    }).start()
+    // if same message, don't restart the fade-in
+    if (currentSubtitle === message) return
 
-    subtitleTimerRef.current = setTimeout(() => {
+    // smooth crossfade: fade out current, swap text, fade back in
+    Animated.timing(subtitleFadeAnim, {
+      toValue: 0,
+      duration: currentSubtitle ? 200 : 0,
+      useNativeDriver: true,
+    }).start(() => {
       if (!isMountedRef.current) return
+      setCurrentSubtitle(message)
       Animated.timing(subtitleFadeAnim, {
-        toValue: 0,
-        duration: SUBTITLE_FADE_OUT_MS,
-        useNativeDriver: true
-      }).start(() => {
-        if (isMountedRef.current) setCurrentSubtitle('')
-      })
-    }, SUBTITLE_READ_MS)
-  }, [subtitleFadeAnim])
+        toValue: 1,
+        duration: 320,
+        useNativeDriver: true,
+      }).start()
+    })
+  }, [subtitleFadeAnim, currentSubtitle])
 
   // intro subtitle on first load
   useEffect(() => {
@@ -238,6 +337,17 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
 
   const currentQuestion = questions[step]
 
+  // smooth progress bar fill on step change
+  const progressTarget = (step + 1) / questions.length
+  useEffect(() => {
+    Animated.timing(progressAnim, {
+      toValue: progressTarget,
+      duration: 380,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start()
+  }, [progressTarget])
+
   const updateProfile = (field: string, value: string | number | string[]) => {
     setProfile(prev => ({ ...prev, [field]: value }))
     setError('')
@@ -341,33 +451,15 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
     if (q.type === 'privacy') {
       return (
         <View style={styles.privacyContainer}>
-          <View style={styles.privacyItem}>
-            <View style={styles.privacyIcon}>
-              <Text style={styles.privacyIconText}>*</Text>
-            </View>
-            <View style={styles.privacyTextContainer}>
-              <Text style={styles.privacyTitle}>Messages Stay on Your Phone</Text>
-              <Text style={styles.privacyDesc}>Your chat history never leaves your device</Text>
-            </View>
-          </View>
-          <View style={styles.privacyItem}>
-            <View style={styles.privacyIcon}>
-              <Text style={styles.privacyIconText}>*</Text>
-            </View>
-            <View style={styles.privacyTextContainer}>
-              <Text style={styles.privacyTitle}>No Data Collection</Text>
-              <Text style={styles.privacyDesc}>We don't store or send your conversations anywhere</Text>
-            </View>
-          </View>
-          <View style={styles.privacyItem}>
-            <View style={styles.privacyIcon}>
-              <Text style={styles.privacyIconText}>*</Text>
-            </View>
-            <View style={styles.privacyTextContainer}>
-              <Text style={styles.privacyTitle}>Your Secrets are Safe</Text>
-              <Text style={styles.privacyDesc}>Everything you share stays between us</Text>
-            </View>
-          </View>
+          {PRIVACY_ITEMS.map((item, i) => (
+            <PrivacyItem
+              key={item.title}
+              icon={item.icon}
+              title={item.title}
+              desc={item.desc}
+              delay={120 + i * 90}
+            />
+          ))}
         </View>
       )
     }
@@ -504,10 +596,20 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
       >
         <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
           <Text style={styles.stepIndicator}>
-            {step + 1} / {questions.length}
+            {step + 1} <Text style={styles.stepIndicatorTotal}>/ {questions.length}</Text>
           </Text>
           <View style={styles.progressBar}>
-            <View style={[styles.progressFill, { width: `${((step + 1) / questions.length) * 100}%` }]} />
+            <Animated.View
+              style={[
+                styles.progressFill,
+                {
+                  width: progressAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: ['0%', '100%'],
+                  }),
+                },
+              ]}
+            />
           </View>
         </View>
 
@@ -519,13 +621,16 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
           {/* luna's message */}
           {currentSubtitle !== '' && (
             <Animated.View style={[styles.subtitleContainer, { opacity: subtitleFadeAnim }]}>
-              <Text style={styles.subtitleText}>"{currentSubtitle}"</Text>
+              <View style={styles.subtitleAccent} />
+              <Text style={styles.subtitleText}>{currentSubtitle}</Text>
             </Animated.View>
           )}
 
           <Animated.View style={[styles.questionContainer, { opacity: fadeAnim }]}>
             <Text style={styles.questionTitle}>{currentQuestion.title}</Text>
-            <Text style={styles.questionSubtitle}>{currentQuestion.subtitle}</Text>
+            {currentQuestion.subtitle ? (
+              <Text style={styles.questionSubtitle}>{currentQuestion.subtitle}</Text>
+            ) : null}
 
             {renderInput()}
 
@@ -545,11 +650,12 @@ export const OnboardingScreen = ({ onComplete }: OnboardingScreenProps) => {
                 <Text style={styles.skipButtonText}>Skip</Text>
               </TouchableOpacity>
             )}
-            <TouchableOpacity style={styles.nextButton} onPress={nextStep}>
-              <Text style={styles.nextButtonText}>
-                {step === questions.length - 1 ? "Let's Go!" : step === 0 ? 'I Understand' : 'Continue'}
-              </Text>
-            </TouchableOpacity>
+            <SpringButton
+              label={step === questions.length - 1 ? "Let's Go" : step === 0 ? 'I Understand' : 'Continue'}
+              onPress={nextStep}
+              style={styles.nextButton}
+              textStyle={styles.nextButtonText}
+            />
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -576,22 +682,29 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: 24,
-    paddingBottom: 16
+    paddingBottom: 12,
   },
   stepIndicator: {
-    color: 'rgba(255,255,255,0.6)',
-    fontSize: 14,
-    marginBottom: 8
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 13,
+    fontWeight: '600',
+    letterSpacing: 0.4,
+    marginBottom: 10,
+  },
+  stepIndicatorTotal: {
+    color: 'rgba(255,255,255,0.4)',
+    fontWeight: '500',
   },
   progressBar: {
-    height: 4,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    borderRadius: 2
+    height: 3,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderRadius: 2,
+    overflow: 'hidden',
   },
   progressFill: {
     height: '100%',
     backgroundColor: '#ff69b4',
-    borderRadius: 2
+    borderRadius: 2,
   },
   scrollContent: {
     flex: 1
@@ -602,75 +715,85 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24
   },
   subtitleContainer: {
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 24,
-    borderLeftWidth: 3,
-    borderLeftColor: '#ff69b4'
+    flexDirection: 'row',
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingRight: 16,
+    paddingLeft: 14,
+    marginBottom: 28,
+    overflow: 'hidden',
+  },
+  subtitleAccent: {
+    width: 2,
+    backgroundColor: '#ff69b4',
+    borderRadius: 1,
+    marginRight: 12,
   },
   subtitleText: {
-    fontSize: 16,
-    color: '#fff',
-    fontStyle: 'italic',
-    lineHeight: 24
+    flex: 1,
+    fontSize: 15,
+    color: 'rgba(255,255,255,0.92)',
+    lineHeight: 22,
+    letterSpacing: 0.1,
   },
   questionContainer: {
-    alignItems: 'center'
+    alignItems: 'center',
   },
   questionTitle: {
-    fontSize: 28,
-    fontWeight: '700',
+    fontSize: 30,
+    fontWeight: '600',
     color: '#fff',
     textAlign: 'center',
-    marginBottom: 8
+    letterSpacing: -0.4,
+    lineHeight: 36,
+    marginBottom: 6,
   },
   questionSubtitle: {
-    fontSize: 16,
-    color: 'rgba(255,255,255,0.6)',
+    fontSize: 15,
+    color: 'rgba(255,255,255,0.55)',
     textAlign: 'center',
-    marginBottom: 32
+    lineHeight: 21,
+    marginBottom: 28,
+    paddingHorizontal: 12,
   },
   privacyContainer: {
     width: '100%',
-    gap: 20
+    gap: 10,
   },
   privacyItem: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 16,
-    padding: 16,
-    borderLeftWidth: 3,
-    borderLeftColor: '#4ade80'
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderWidth: 0.5,
+    borderColor: 'rgba(74, 222, 128, 0.18)',
   },
   privacyIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(74, 222, 128, 0.2)',
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: 'rgba(74, 222, 128, 0.14)',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 14
-  },
-  privacyIconText: {
-    fontSize: 18,
-    color: '#4ade80',
-    fontWeight: '700'
+    marginRight: 12,
   },
   privacyTextContainer: {
-    flex: 1
+    flex: 1,
   },
   privacyTitle: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
     color: '#fff',
-    marginBottom: 4
+    letterSpacing: -0.1,
+    marginBottom: 2,
   },
   privacyDesc: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.6)',
-    lineHeight: 20
+    fontSize: 13,
+    color: 'rgba(255, 255, 255, 0.55)',
+    lineHeight: 18,
   },
   textInput: {
     width: '100%',
@@ -787,48 +910,54 @@ const styles = StyleSheet.create({
     textAlign: 'center'
   },
   footer: {
-    paddingHorizontal: 24,
-    paddingTop: 16
+    paddingHorizontal: 20,
+    paddingTop: 12,
   },
   buttonRow: {
     flexDirection: 'row',
-    gap: 12
+    gap: 10,
   },
   backButton: {
-    paddingVertical: 18,
-    paddingHorizontal: 24,
-    borderRadius: 28,
-    backgroundColor: 'rgba(255,255,255,0.1)'
+    paddingVertical: 16,
+    paddingHorizontal: 22,
+    borderRadius: 26,
+    backgroundColor: 'rgba(255,255,255,0.08)',
   },
   backButtonText: {
     color: '#fff',
-    fontSize: 16,
-    fontWeight: '600'
+    fontSize: 15,
+    fontWeight: '600',
+    letterSpacing: 0.1,
   },
   skipButton: {
-    paddingVertical: 18,
-    paddingHorizontal: 24,
-    borderRadius: 28
+    paddingVertical: 16,
+    paddingHorizontal: 18,
+    borderRadius: 26,
   },
   skipButtonText: {
-    color: 'rgba(255,255,255,0.6)',
-    fontSize: 16
+    color: 'rgba(255,255,255,0.55)',
+    fontSize: 15,
+    fontWeight: '500',
   },
   nextButton: {
-    flex: 1,
+    // NO flex here — the SpringButton's outer Pressable owns the flex sizing.
+    // Adding flex here too collapses the inner Animated.View height to zero
+    // (button looks like an empty pink pill with no text).
     backgroundColor: '#ff69b4',
-    paddingVertical: 18,
-    borderRadius: 28,
+    paddingVertical: 16,
+    borderRadius: 26,
     alignItems: 'center',
+    justifyContent: 'center',
     shadowColor: '#ff69b4',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
-    elevation: 6
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 14,
+    elevation: 8,
   },
   nextButtonText: {
     color: '#fff',
-    fontSize: 18,
-    fontWeight: '700'
-  }
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
 })

@@ -8,7 +8,6 @@ import {
   Text,
   StyleSheet,
   Keyboard,
-  KeyboardAvoidingView,
   Platform,
   StatusBar,
   FlatList,
@@ -34,7 +33,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { showAlert, AlertProvider } from "../components/AppAlert";
 import { ImageSourceSheet } from "../components/ImageSourceSheet";
 import { ImageViewerModal } from "../components/ImageViewerModal";
-import { startRecording, stopRecording, pauseRecording, resumeRecording, cancelRecording, transcribeAudio } from "../services/voice";
+import { VoiceNoteBubble } from "../components/VoiceNoteBubble";
+import { startRecording, stopRecording, pauseRecording, resumeRecording, cancelRecording } from "../services/voice";
 import { setNotificationsMuted } from "../services/notifications";
 import { PaymentModal } from "../components/PaymentModal";
 import { RefundBottomSheet } from "../components/RefundBottomSheet";
@@ -43,6 +43,7 @@ import { SettingsScreen } from "./SettingsScreen";
 import {
   generateChatResponse,
   generateChatResponseWithImage,
+  generateChatResponseWithVoice,
   clearChatHistory,
   loadChatHistory,
   initializeChatWithProfile,
@@ -75,6 +76,8 @@ interface DisplayMessage {
   content: string;
   timestamp: Date;
   imageUri?: string;
+  audioUri?: string;
+  audioDurationMs?: number;
 }
 
 // Tracks which message ids have already played their entry animation so that
@@ -134,9 +137,17 @@ const AnimatedBubble = ({
   );
 };
 
-const AnimatedKAV = Animated.createAnimatedComponent(KeyboardAvoidingView);
 
 const messageKeyExtractor = (item: DisplayMessage) => item.id;
+
+// 12-hour "h:mm AM/PM" format used in the message timestamp under each bubble
+const formatTime = (d: Date) => {
+  const hours = d.getHours();
+  const mins = d.getMinutes();
+  const ampm = hours >= 12 ? "PM" : "AM";
+  const h12 = hours % 12 || 12;
+  return `${h12}:${mins.toString().padStart(2, "0")} ${ampm}`;
+};
 
 const EmptyList = () => (
   <View style={styles.emptyContainer}>
@@ -182,6 +193,7 @@ const MessageItem = React.memo(
   function MessageItem({ item, isActiveMatch, searchQuery, lunaProfile, onImagePress }: MessageItemProps) {
     const isUser = item.role === "user";
     const hasImage = !!item.imageUri;
+    const hasAudio = !!item.audioUri;
     const displayContent =
       isUser &&
       (item.content.startsWith("[User sent an image") ||
@@ -230,30 +242,51 @@ const MessageItem = React.memo(
             <AvatarPreview profile={lunaProfile} size={28} />
           </View>
         )}
-        <View
-          style={[
-            styles.messageBubble,
-            isUser ? styles.userBubble : styles.assistantBubble,
-            hasImage && styles.imageBubble,
-          ]}
-        >
-          {hasImage && item.imageUri && (
-            <TouchableOpacity
-              activeOpacity={0.85}
-              onPress={() => onImagePress(item.imageUri!)}
+        <View style={isUser ? styles.bubbleColumnUser : styles.bubbleColumnAssistant}>
+          {hasAudio && item.audioUri ? (
+            <VoiceNoteBubble
+              audioUri={item.audioUri}
+              durationMs={item.audioDurationMs ?? 0}
+              isUser={isUser}
+            />
+          ) : (
+            <View
+              style={[
+                styles.messageBubble,
+                isUser ? styles.userBubble : styles.assistantBubble,
+                hasImage && styles.imageBubble,
+              ]}
             >
-              <Image
-                source={{ uri: item.imageUri }}
-                style={styles.messageImage}
-                resizeMode="cover"
-              />
-            </TouchableOpacity>
-          )}
-          {content && (
-            <View style={hasImage ? styles.imageCaption : undefined}>
-              {content}
+              {hasImage && item.imageUri && (
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={() => onImagePress(item.imageUri!)}
+                >
+                  <Image
+                    source={{ uri: item.imageUri }}
+                    style={[
+                      styles.messageImage,
+                      isUser ? styles.messageImageUser : styles.messageImageAssistant,
+                    ]}
+                    resizeMode="cover"
+                  />
+                </TouchableOpacity>
+              )}
+              {content && (
+                <View style={hasImage ? styles.imageCaption : undefined}>
+                  {content}
+                </View>
+              )}
             </View>
           )}
+          <Text
+            style={[
+              styles.timestamp,
+              isUser ? styles.timestampUser : styles.timestampAssistant,
+            ]}
+          >
+            {formatTime(item.timestamp)}
+          </Text>
         </View>
       </AnimatedBubble>
     );
@@ -278,7 +311,6 @@ export const ChatScreen = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [isRecordingPaused, setIsRecordingPaused] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
-  const [isTranscribing, setIsTranscribing] = useState(false);
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [showMenu, setShowMenu] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
@@ -303,30 +335,47 @@ export const ChatScreen = () => {
   const insets = useSafeAreaInsets();
   const menuTop = insets.top + 62;
 
-  // Android: adjustNothing mode — drive an Animated.Value so the input bar
-  // rides smoothly with the keyboard's slide instead of snapping after didShow.
-  const kbAnim = useRef(new Animated.Value(0)).current;
+  // Single source of truth for the bottom region (below the input bar).
+  // Whether the keyboard is up, the emoji picker is open, or neither, it's
+  // ALWAYS driven by one Animated.Value with one timing call per state change.
+  // Eliminates the prior dual-animation (KAV marginBottom + picker height)
+  // jitter, and makes the input bar position stable across all three states.
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const lastKbHeight = useRef(0);
+  const PICKER_TOTAL = 380 + Math.max(insets.bottom, 0); // matches EmojiPicker
+  const computeBottomTarget = () => {
+    if (showEmojiPicker) return PICKER_TOTAL;
+    // Some Android devices report keyboardDidShow height EXCLUDING the gesture
+    // nav inset. Adding insets.bottom guarantees the input clears the keyboard's
+    // top on every device — at worst a tiny extra gap on devices that include
+    // the inset already, which is invisible since the keyboard sits below.
+    if (keyboardHeight > 0) return keyboardHeight + Math.max(insets.bottom, 0);
+    return Math.max(insets.bottom, 0);
+  };
+  const bottomSpace = useRef(
+    new Animated.Value(Math.max(insets.bottom, 0)),
+  ).current;
+
   useEffect(() => {
-    if (Platform.OS !== "android") return;
-    const show = Keyboard.addListener("keyboardDidShow", (e) => {
+    Animated.timing(bottomSpace, {
+      toValue: computeBottomTarget(),
+      duration: 240,
+      easing: Easing.inOut(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [showEmojiPicker, keyboardHeight, insets.bottom]);
+
+  useEffect(() => {
+    const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const show = Keyboard.addListener(showEvt, (e) => {
       const h = e.endCoordinates.height;
       lastKbHeight.current = h;
-      Animated.timing(kbAnim, {
-        toValue: h,
-        duration: 220,
-        easing: Easing.in(Easing.cubic),
-        useNativeDriver: false,
-      }).start();
+      setKeyboardHeight(h);
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
     });
-    const hide = Keyboard.addListener("keyboardDidHide", () => {
-      Animated.timing(kbAnim, {
-        toValue: 0,
-        duration: 260,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: false,
-      }).start();
+    const hide = Keyboard.addListener(hideEvt, () => {
+      setKeyboardHeight(0);
     });
     return () => { show.remove(); hide.remove(); };
   }, []);
@@ -455,6 +504,8 @@ export const ChatScreen = () => {
           content: m.content,
           timestamp: new Date(),
           imageUri: m.imageUri,
+          audioUri: m.audioUri,
+          audioDurationMs: m.audioDurationMs,
         }));
       setMessages(displayMessages);
 
@@ -612,15 +663,53 @@ export const ChatScreen = () => {
     stopRecordingTimer();
     setIsRecording(false);
     setIsRecordingPaused(false);
+    const durationMs = recordingSeconds * 1000;
     setRecordingSeconds(0);
-    setIsTranscribing(true);
+
     const uri = await stopRecording();
-    if (uri) {
-      const text = await transcribeAudio(uri);
-      if (text) setInput((prev) => (prev ? prev + " " + text : text));
-      else showAlert({ title: "Could not transcribe", message: "Please try again.", icon: "error" });
-    }
-    setIsTranscribing(false);
+    if (!uri) return;
+
+    Keyboard.dismiss();
+
+    // optimistic display: show the voice note bubble immediately
+    const userMessage: DisplayMessage = {
+      id: `user-voice-${Date.now()}`,
+      role: "user",
+      content: "",
+      timestamp: new Date(),
+      audioUri: uri,
+      audioDurationMs: durationMs,
+    };
+    setMessages((prev) => [...prev, userMessage]);
+
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    playSound("send");
+
+    setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+
+    setIsLoading(true);
+    setIsTyping(true);
+
+    // background: transcribe the audio + ask Luna to reply with awareness
+    // that this was a voice note (handled inside generateChatResponseWithVoice)
+    const response = await generateChatResponseWithVoice(uri, durationMs);
+
+    if (!isMountedRef.current) return;
+    setIsLoading(false);
+    setIsTyping(false);
+
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    playSound("receive");
+
+    const assistantMessage: DisplayMessage = {
+      id: `assistant-${Date.now()}`,
+      role: "assistant",
+      content: response,
+      timestamp: new Date(),
+    };
+    setMessages((prev) => [...prev, assistantMessage]);
+
+    setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
   };
 
   const sendMessage = async () => {
@@ -1085,10 +1174,7 @@ export const ChatScreen = () => {
       )}
 
 
-      <AnimatedKAV
-        style={[styles.keyboardAvoid, Platform.OS === "android" && { marginBottom: kbAnim }]}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-      >
+      <View style={styles.keyboardAvoid}>
         {/* message list */}
         <FlatList
           ref={flatListRef}
@@ -1098,8 +1184,8 @@ export const ChatScreen = () => {
           style={styles.messageList}
           contentContainerStyle={styles.messageListContent}
           showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag"
+          keyboardShouldPersistTaps="always"
+          keyboardDismissMode="none"
           initialNumToRender={15}
           maxToRenderPerBatch={10}
           windowSize={7}
@@ -1134,15 +1220,10 @@ export const ChatScreen = () => {
           </TouchableOpacity>
         </Animated.View>
 
-        {/* input section */}
-        <View
-          style={[
-            styles.inputContainer,
-            {
-              paddingBottom: showEmojiPicker ? 6 : Math.max(insets.bottom, 12),
-            },
-          ]}
-        >
+        {/* input section — fixed paddingBottom; the dynamic bottom region
+            below this view (keyboard / picker / safe-area) is handled by
+            the single Animated.View further down. */}
+        <View style={[styles.inputContainer, { paddingBottom: 8 }]}>
           {/* staged photo preview (shown above the input row before send) */}
           {pendingImageUri && !isRecording && (
             <View style={styles.imagePreviewRow}>
@@ -1205,30 +1286,20 @@ export const ChatScreen = () => {
                 style={styles.inputIconBtn}
                 onPress={() => {
                   if (showEmojiPicker) {
-                    // closing picker → opening keyboard. Match the picker's
-                    // close timing exactly (220ms cubic-in) so the inputContainer
-                    // rises in lock-step as the picker collapses — no kick.
-                    if (Platform.OS === "android" && lastKbHeight.current > 0) {
-                      Animated.timing(kbAnim, {
-                        toValue: lastKbHeight.current,
-                        duration: 220,
-                        easing: Easing.in(Easing.cubic),
-                        useNativeDriver: false,
-                      }).start();
+                    // closing picker → opening keyboard.
+                    // Pre-set keyboardHeight optimistically using the cached
+                    // last-known value so the bottomSpace animation can begin
+                    // immediately (in sync with the system keyboard rising).
+                    setShowEmojiPicker(false);
+                    if (lastKbHeight.current > 0) {
+                      setKeyboardHeight(lastKbHeight.current);
                     }
                     inputRef.current?.focus();
                   } else {
-                    // closing keyboard → opening picker. Match the picker's
-                    // open timing exactly (260ms cubic-out) so KAV margin
-                    // shrinks at the same rate as the picker grows.
-                    if (Platform.OS === "android") {
-                      Animated.timing(kbAnim, {
-                        toValue: 0,
-                        duration: 260,
-                        easing: Easing.out(Easing.cubic),
-                        useNativeDriver: false,
-                      }).start();
-                    }
+                    // closing keyboard → opening picker.
+                    // Eagerly clear keyboardHeight so the single bottomSpace
+                    // animation runs once from kbHeight → PICKER_TOTAL.
+                    setKeyboardHeight(0);
                     Keyboard.dismiss();
                     setShowEmojiPicker(true);
                   }
@@ -1269,10 +1340,6 @@ export const ChatScreen = () => {
                 <TouchableOpacity style={styles.sendBtn} onPress={sendMessage} disabled={isLoading}>
                   <Ionicons name="send" size={19} color="#fff" />
                 </TouchableOpacity>
-              ) : isTranscribing ? (
-                <View style={styles.sendBtn}>
-                  <ActivityIndicator size="small" color="#fff" />
-                </View>
               ) : (
                 <TouchableOpacity style={styles.sendBtn} onPress={handleVoiceTap} disabled={isLoading}>
                   <Ionicons name="mic" size={21} color="#fff" />
@@ -1282,12 +1349,25 @@ export const ChatScreen = () => {
           )}
         </View>
 
-        {/* inline emoji drawer — sits where the keyboard would, input stays visible */}
-        <EmojiPicker
-          visible={showEmojiPicker}
-          onSelect={handleEmojiSelect}
-        />
-      </AnimatedKAV>
+        {/* single animated bottom region: covers safe-area, keyboard, OR
+            picker — whichever is active. Picker is only mounted while open
+            so its dark drawer background never bleeds through during the
+            idle/keyboard states (otherwise overflow-clipped top of the
+            picker draws a visible grey strip behind the input bar). */}
+        <Animated.View
+          style={{
+            height: bottomSpace,
+            overflow: "hidden",
+          }}
+        >
+          {showEmojiPicker && (
+            <EmojiPicker
+              visible={showEmojiPicker}
+              onSelect={handleEmojiSelect}
+            />
+          )}
+        </Animated.View>
+      </View>
 
       {/* settings screen overlay */}
       {showSettings && (
@@ -1468,9 +1548,11 @@ const styles = StyleSheet.create({
   avatarWrap: {
     marginRight: 8,
   },
-  // message bubbles - instagram style
+  // message bubbles - instagram style.
+  // Width capping is owned by the bubbleColumn wrapper (one level up) — putting
+  // maxWidth here too creates recursive percentage constraints that wrap short
+  // messages character-by-character. The column's 85% cap propagates down.
   messageBubble: {
-    maxWidth: "85%",
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderRadius: 22,
@@ -1502,6 +1584,31 @@ const styles = StyleSheet.create({
     backgroundColor: "#FF9500",
     color: "#000",
   },
+  // wraps the bubble + timestamp in a column so the time sits below the bubble.
+  // The 85% width cap lives ONLY here (not on messageBubble too) — stacking
+  // both creates recursive percentage constraints that wrap short messages
+  // character-by-character.
+  bubbleColumnUser: {
+    alignItems: "flex-end",
+    maxWidth: "85%",
+  },
+  bubbleColumnAssistant: {
+    alignItems: "flex-start",
+    maxWidth: "85%",
+  },
+  // small time text under each message — WhatsApp style
+  timestamp: {
+    fontSize: 11,
+    color: "rgba(255,255,255,0.4)",
+    marginTop: 3,
+    marginHorizontal: 4,
+  },
+  timestampUser: {
+    textAlign: "right",
+  },
+  timestampAssistant: {
+    textAlign: "left",
+  },
   // image in message
   imageBubble: {
     padding: 0,
@@ -1509,10 +1616,22 @@ const styles = StyleSheet.create({
     paddingVertical: 0,
     overflow: "hidden",
   },
+  // image gets explicit rounded corners matching its bubble shape so Android's
+  // unreliable `overflow:hidden + borderRadius` clipping doesn't bleed past
+  // the bubble edge
   messageImage: {
     width: 240,
     height: 300,
-    borderRadius: 0,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+  },
+  messageImageUser: {
+    borderBottomLeftRadius: 22,
+    borderBottomRightRadius: 4,
+  },
+  messageImageAssistant: {
+    borderBottomLeftRadius: 4,
+    borderBottomRightRadius: 22,
   },
   imageCaption: {
     marginTop: 0,

@@ -1,8 +1,9 @@
-// voice recording + whisper STT service
+// voice recording + whisper STT service.
+// recording uses expo-av; transcription uses OpenAI's Whisper API directly
+// (multipart audio upload — works with the m4a/aac files expo-av produces).
 
 import { Audio } from 'expo-av'
-import * as FileSystem from 'expo-file-system/legacy'
-import { HF_TOKEN } from '../constants/config'
+import { OPENAI_API_KEY } from '../constants/config'
 
 let recording: Audio.Recording | null = null
 
@@ -76,39 +77,45 @@ export const stopRecording = async (): Promise<string | null> => {
   }
 }
 
-// hf-inference whisper-large-v3-turbo via HF Router.
-// the Router-proxied endpoint only accepts JSON (the legacy raw-binary
-// api-inference.huggingface.co path is deprecated and returns 404; the new
-// Router path returns 400 if you POST raw bytes — only application/json
-// is accepted now). so we read the recording as base64 and send it as
-// {"inputs": "<base64>"} — confirmed shape from HF inference docs.
+// transcribe an audio file using OpenAI's Whisper API.
+// expo-av records to .m4a (AAC in MP4 container) on both iOS and Android with
+// the HIGH_QUALITY preset; OpenAI accepts that as audio/mp4 multipart upload.
+// returns the transcript on success, or null on any failure (caller shows the
+// "Could not transcribe" alert).
 export const transcribeAudio = async (uri: string): Promise<string | null> => {
   try {
-    const base64 = await FileSystem.readAsStringAsync(uri, {
-      encoding: FileSystem.EncodingType.Base64,
-    })
+    if (!OPENAI_API_KEY) {
+      console.warn('[Whisper] OPENAI_API_KEY missing — cannot transcribe')
+      return null
+    }
 
-    const res = await fetch(
-      'https://router.huggingface.co/hf-inference/models/openai/whisper-large-v3-turbo',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${HF_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ inputs: `data:audio/mp4;base64,${base64}` }),
-      }
-    )
+    // RN's FormData accepts a {uri,name,type} blob descriptor for local files;
+    // fetch handles multipart boundary automatically (don't set Content-Type).
+    const form = new FormData()
+    form.append('file', {
+      uri,
+      name: 'audio.m4a',
+      type: 'audio/mp4',
+    } as any)
+    form.append('model', 'whisper-1')
+
+    const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: form,
+    })
 
     if (!res.ok) {
       const body = await res.text()
-      console.warn('[Whisper] hf-inference →', res.status, body.slice(0, 200))
+      console.warn('[Whisper] error', res.status, body.slice(0, 200))
       return null
     }
 
     const data = (await res.json()) as { text?: string }
     const text = data.text?.trim() || null
-    if (text) console.log('[Whisper] hf-inference →', text)
+    if (text) console.log('[Whisper] →', text)
     return text
   } catch (e) {
     console.warn('[Whisper] transcribe threw:', e)

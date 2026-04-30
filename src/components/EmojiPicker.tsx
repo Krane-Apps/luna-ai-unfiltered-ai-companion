@@ -270,48 +270,14 @@ export const EmojiPicker = ({ visible, onSelect }: Props) => {
   const [activeCategory, setActiveCategory] = useState(0);
   const [search, setSearch] = useState("");
 
-  const fullHeight = SHEET_HEIGHT + Math.max(insets.bottom, 0);
-  const heightAnim = useRef(new Animated.Value(visible ? fullHeight : 0)).current;
-  const contentOpacity = useRef(new Animated.Value(visible ? 1 : 0)).current;
+  // Parent controls the height (single bottom-region animation in ChatScreen).
+  // We just render content at full size and let the parent's overflow:hidden
+  // clip us. Internal animations (tab indicator, emoji press, grid swap) stay.
   const indicatorX = useRef(new Animated.Value(0)).current;
   const gridOpacity = useRef(new Animated.Value(1)).current;
   const gridTranslate = useRef(new Animated.Value(0)).current;
   const tabsScrollRef = useRef<ScrollView>(null);
   const gridListRef = useRef<FlatList>(null);
-
-  // animate the picker drawer in/out — input stays put, picker takes the keyboard's space
-  useEffect(() => {
-    if (visible) {
-      Animated.parallel([
-        Animated.timing(heightAnim, {
-          toValue: fullHeight,
-          duration: 260,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: false,
-        }),
-        Animated.timing(contentOpacity, {
-          toValue: 1,
-          duration: 200,
-          delay: 60,
-          useNativeDriver: false,
-        }),
-      ]).start();
-    } else {
-      Animated.parallel([
-        Animated.timing(contentOpacity, {
-          toValue: 0,
-          duration: 120,
-          useNativeDriver: false,
-        }),
-        Animated.timing(heightAnim, {
-          toValue: 0,
-          duration: 220,
-          easing: Easing.in(Easing.cubic),
-          useNativeDriver: false,
-        }),
-      ]).start();
-    }
-  }, [visible, fullHeight]);
 
   // grid swap animation when category changes
   useEffect(() => {
@@ -365,14 +331,14 @@ export const EmojiPicker = ({ visible, onSelect }: Props) => {
   );
 
   return (
-    <Animated.View
-      style={[styles.drawer, { height: heightAnim }]}
+    <View
+      style={[styles.drawer, { height: SHEET_HEIGHT + Math.max(insets.bottom, 0) }]}
       pointerEvents={visible ? "auto" : "none"}
     >
-      <Animated.View
+      <View
         style={[
           styles.drawerInner,
-          { paddingBottom: Math.max(insets.bottom, 8), opacity: contentOpacity },
+          { paddingBottom: Math.max(insets.bottom, 8) },
         ]}
       >
         <View style={styles.searchRow}>
@@ -440,8 +406,8 @@ export const EmojiPicker = ({ visible, onSelect }: Props) => {
             updateCellsBatchingPeriod={50}
           />
         </Animated.View>
-      </Animated.View>
-    </Animated.View>
+      </View>
+    </View>
   );
 };
 

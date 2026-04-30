@@ -13,6 +13,8 @@ export interface ChatMessage {
   content: string
   imageUri?: string // local uri for display
   imageBase64?: string // base64 encoded image for ai analysis
+  audioUri?: string // local uri for voice note playback
+  audioDurationMs?: number // recording length in milliseconds
 }
 
 export interface SessionState {

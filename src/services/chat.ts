@@ -7,6 +7,7 @@ import { HF_TOKEN } from '../constants/config'
 import { LUNA_SYSTEM_PROMPT } from '../constants/prompts'
 import { saveMessageToFirestore, getNewMessages, getFirebaseUserId, getMessagesFromFirestore } from './firebase'
 import { analyzeImage } from './vision'
+import { transcribeAudio } from './voice'
 import { isNetworkError, showNetworkError } from './api'
 
 const CHAT_MODEL = 'dphn/Dolphin-Mistral-24B-Venice-Edition:featherless-ai'
@@ -284,6 +285,74 @@ export const generateChatResponseWithImage = async (
       return "I can't reach you right now, baby. Check your internet connection?"
     }
     return "I couldn't see that clearly, baby. Can you try again?"
+  }
+}
+
+// generate a chat reply for a voice note. The audio is transcribed via Whisper
+// (so Luna's text-only chat model can act on it), then we hand the transcript
+// to the chat model wrapped in instructions so Luna *knows* it was a voice
+// note, not a typed message — affects the tone of her reply.
+export const generateChatResponseWithVoice = async (
+  audioUri: string,
+  audioDurationMs: number,
+): Promise<string> => {
+  const client = getClient()
+
+  try {
+    console.log('Transcribing voice note...')
+    const transcript = await transcribeAudio(audioUri)
+    console.log('Voice note transcript:', transcript)
+
+    // build context — internal-only, never shown verbatim to the user
+    const seconds = Math.max(1, Math.round(audioDurationMs / 1000))
+    const transcriptPart = transcript
+      ? `Their words: "${transcript}".`
+      : `(The transcription was empty or failed — react warmly and ask them to repeat or send a text.)`
+    const apiContent = `[The user just sent you a voice note (${seconds}s long). ${transcriptPart} Reply naturally as Luna — acknowledge that you heard them speak (not just type), match their tone, and continue the conversation.]`
+
+    // history records a placeholder for the voice note so display & persistence
+    // work, but the audio itself isn't shipped to the chat model
+    chatHistory.push({
+      role: 'user',
+      content: '',
+      audioUri,
+      audioDurationMs,
+    })
+    saveMessageToFirebaseBackend('user', transcript || `[voice note ${seconds}s]`)
+
+    // build api messages: replace the last user entry's content with the
+    // instruction-enriched prompt (other entries pass through as text-only)
+    const apiMessages = chatHistory.map((m, i) =>
+      i === chatHistory.length - 1 && m.role === 'user'
+        ? { role: m.role, content: apiContent }
+        : { role: m.role, content: m.content }
+    )
+
+    const response = await client.chat.completions.create({
+      model: CHAT_MODEL,
+      messages: apiMessages,
+      max_tokens: 200,
+      temperature: 0.8,
+    })
+
+    const assistantMessage =
+      response.choices[0]?.message?.content ||
+      "Mmm, I love hearing your voice, baby. Tell me more."
+
+    chatHistory.push({ role: 'assistant', content: assistantMessage })
+    saveMessageToFirebaseBackend('assistant', assistantMessage)
+    await saveChatHistory()
+
+    console.log('Voice reply:', assistantMessage)
+    return assistantMessage
+  } catch (error) {
+    console.error('chat with voice error:', error)
+    await saveChatHistory()
+    if (isNetworkError(error)) {
+      showNetworkError()
+      return "I can't reach you right now, baby. Check your internet?"
+    }
+    return "I couldn't quite catch that, baby. Can you say it again?"
   }
 }
 
