@@ -234,8 +234,10 @@ export const generateChatResponseWithImage = async (
     const imageDescription = await analyzeImage(imageUri)
     console.log('Image description:', imageDescription)
 
-    // instruction sent to the model — never shown to the user
-    const imageContext = `[Image received — Luna can see: "${imageDescription}". React naturally to what you see, comment on it flirtatiously or warmly, and engage with the content. Do NOT say you cannot see images.]`
+    // instruction sent to the model — never shown to the user. the
+    // description is multi-sentence now (real VLM output), so we phrase it
+    // as a normal sentence rather than a quoted string for cleaner prompts.
+    const imageContext = `[The user sent a photo. Luna sees: ${imageDescription} React to specifics in the photo — what they're wearing, their expression, the setting, any text visible — flirtatiously and naturally. Do NOT say you cannot see images.]`
     const apiContent = userMessage ? `${imageContext} ${userMessage}` : imageContext
 
     // display content stored in history — just the user's text (or empty for image-only)

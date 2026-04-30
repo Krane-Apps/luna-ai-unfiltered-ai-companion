@@ -1,6 +1,7 @@
 // voice recording + whisper STT service
 
 import { Audio } from 'expo-av'
+import * as FileSystem from 'expo-file-system/legacy'
 import { HF_TOKEN } from '../constants/config'
 
 let recording: Audio.Recording | null = null
@@ -75,38 +76,42 @@ export const stopRecording = async (): Promise<string | null> => {
   }
 }
 
+// hf-inference whisper-large-v3-turbo via HF Router.
+// the Router-proxied endpoint only accepts JSON (the legacy raw-binary
+// api-inference.huggingface.co path is deprecated and returns 404; the new
+// Router path returns 400 if you POST raw bytes — only application/json
+// is accepted now). so we read the recording as base64 and send it as
+// {"inputs": "<base64>"} — confirmed shape from HF inference docs.
 export const transcribeAudio = async (uri: string): Promise<string | null> => {
   try {
-    const formData = new FormData()
-    formData.append('file', {
-      uri,
-      type: 'audio/m4a',
-      name: 'audio.m4a',
-    } as unknown as Blob)
+    const base64 = await FileSystem.readAsStringAsync(uri, {
+      encoding: FileSystem.EncodingType.Base64,
+    })
 
-    // HF Inference router — model-level endpoint (no /v1 path for audio tasks)
-    const response = await fetch(
+    const res = await fetch(
       'https://router.huggingface.co/hf-inference/models/openai/whisper-large-v3-turbo',
       {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${HF_TOKEN}`,
-          // do NOT set Content-Type — let fetch set multipart boundary automatically
+          'Content-Type': 'application/json',
         },
-        body: formData,
+        body: JSON.stringify({ inputs: `data:audio/mp4;base64,${base64}` }),
       }
     )
 
-    if (!response.ok) {
-      const err = await response.text()
-      console.error('Whisper API error:', err)
+    if (!res.ok) {
+      const body = await res.text()
+      console.warn('[Whisper] hf-inference →', res.status, body.slice(0, 200))
       return null
     }
 
-    const data = await response.json() as { text?: string }
-    return data.text?.trim() ?? null
+    const data = (await res.json()) as { text?: string }
+    const text = data.text?.trim() || null
+    if (text) console.log('[Whisper] hf-inference →', text)
+    return text
   } catch (e) {
-    console.error('transcribeAudio error:', e)
+    console.warn('[Whisper] transcribe threw:', e)
     return null
   }
 }
