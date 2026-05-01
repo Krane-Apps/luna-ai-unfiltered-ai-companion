@@ -24,7 +24,6 @@ import * as ImagePicker from "expo-image-picker";
 import * as Haptics from "expo-haptics";
 import { Audio } from "expo-av";
 import { Ionicons } from "@expo/vector-icons";
-import { EmojiPicker } from "../components/EmojiPicker";
 import { HeaderMenu } from "../components/HeaderMenu";
 import { SearchBar } from "../components/SearchBar";
 import { ThemePicker, ThemeBackground, ChatTheme, THEMES } from "../components/ThemePicker";
@@ -49,6 +48,7 @@ import {
   initializeChatWithProfile,
   getChatHistory,
   loadMessagesFromFirestore,
+  deleteMessageFromHistory,
 } from "../services/chat";
 import {
   initiateLifetimePayment,
@@ -84,6 +84,10 @@ interface DisplayMessage {
 // scrolling them out and back into the FlatList window doesn't re-trigger it.
 const animatedMessageIds = new Set<string>();
 
+// iMessage-style entry animation. User bubbles slide in from the right edge,
+// Luna's slide in from the left edge — matches iOS Messages' directional flow
+// where outgoing pops in from your side and incoming arrives from the other.
+// A subtle scale-up + fade rounds out the motion.
 const AnimatedBubble = ({
   itemId,
   isUser,
@@ -94,11 +98,17 @@ const AnimatedBubble = ({
   children: React.ReactNode;
 }) => {
   const hasAnimated = animatedMessageIds.has(itemId);
+  // user → start to the right (positive X) and travel left to settle.
+  // luna → start to the left (negative X) and travel right.
+  const SLIDE_DISTANCE = 50;
   const translateX = useRef(
-    new Animated.Value(hasAnimated ? 0 : isUser ? 60 : -60),
+    new Animated.Value(hasAnimated ? 0 : isUser ? SLIDE_DISTANCE : -SLIDE_DISTANCE),
   ).current;
   const opacity = useRef(new Animated.Value(hasAnimated ? 1 : 0)).current;
-  const scale = useRef(new Animated.Value(hasAnimated ? 1 : 0.85)).current;
+  // user bubbles get a slightly more pronounced pop; luna's glide in softer
+  const scale = useRef(
+    new Animated.Value(hasAnimated ? 1 : isUser ? 0.9 : 0.95),
+  ).current;
 
   useEffect(() => {
     if (hasAnimated) return;
@@ -106,19 +116,21 @@ const AnimatedBubble = ({
     Animated.parallel([
       Animated.timing(opacity, {
         toValue: 1,
-        duration: 220,
+        duration: isUser ? 200 : 240,
         useNativeDriver: true,
       }),
       Animated.spring(translateX, {
         toValue: 0,
-        tension: 180,
-        friction: 18,
+        // user side: snappier with tiny overshoot (iOS send feel)
+        // luna side: softer glide, no overshoot
+        tension: isUser ? 200 : 160,
+        friction: isUser ? 16 : 20,
         useNativeDriver: true,
       }),
       Animated.spring(scale, {
         toValue: 1,
-        tension: 200,
-        friction: 18,
+        tension: isUser ? 220 : 170,
+        friction: isUser ? 15 : 20,
         useNativeDriver: true,
       }),
     ]).start();
@@ -187,10 +199,101 @@ interface MessageItemProps {
   searchQuery: string;
   lunaProfile: LunaProfile;
   onImagePress: (uri: string) => void;
+  // For user messages: false → single tick (sent), true → double tick (read by Luna).
+  // Derived in the parent from whether any assistant reply exists after this message.
+  isRead: boolean;
+  // Fires when this message's tick transitions single → double (user msgs only).
+  onTickTransition?: () => void;
+  // Long-press → confirm → delete handler. Wired by parent.
+  onLongPressMessage: (item: DisplayMessage) => void;
 }
 
+// inline time + tick row, Telegram-style (sits inside the bubble bottom-right
+// for text/voice, or overlaid on the image for photo bubbles)
+// Animated tick that crossfades from single → double when isRead flips true.
+// White only — no blue. The first paint is treated as "already there" to avoid
+// re-animating ticks for messages that were read on mount (e.g. history load).
+const AnimatedTicks = React.memo(function AnimatedTicks({
+  isRead,
+  color,
+  onTransition,
+}: {
+  isRead: boolean;
+  color: string;
+  onTransition?: () => void;
+}) {
+  const singleOpacity = useRef(new Animated.Value(isRead ? 0 : 1)).current;
+  const doubleOpacity = useRef(new Animated.Value(isRead ? 1 : 0)).current;
+  const doubleScale = useRef(new Animated.Value(isRead ? 1 : 0.6)).current;
+  const prevReadRef = useRef(isRead);
+
+  useEffect(() => {
+    if (prevReadRef.current === isRead) return;
+    prevReadRef.current = isRead;
+    if (isRead) {
+      Animated.parallel([
+        Animated.timing(singleOpacity, { toValue: 0, duration: 140, useNativeDriver: true }),
+        Animated.spring(doubleOpacity, { toValue: 1, friction: 6, tension: 140, useNativeDriver: true }),
+        Animated.spring(doubleScale, { toValue: 1, friction: 5, tension: 160, useNativeDriver: true }),
+      ]).start();
+      onTransition?.();
+    } else {
+      // unusual (message un-read) — snap back without sound
+      singleOpacity.setValue(1);
+      doubleOpacity.setValue(0);
+      doubleScale.setValue(0.6);
+    }
+  }, [isRead, onTransition, singleOpacity, doubleOpacity, doubleScale]);
+
+  return (
+    <View style={styles.tickStack}>
+      <Animated.View style={[styles.tickAbsolute, { opacity: singleOpacity }]}>
+        <Ionicons name="checkmark" size={14} color={color} />
+      </Animated.View>
+      <Animated.View
+        style={[
+          styles.tickAbsolute,
+          { opacity: doubleOpacity, transform: [{ scale: doubleScale }] },
+        ]}
+      >
+        <Ionicons name="checkmark-done" size={14} color={color} />
+      </Animated.View>
+    </View>
+  );
+});
+
+const MessageMeta = ({
+  time,
+  isUser,
+  isRead,
+  onTickTransition,
+}: {
+  time: string;
+  isUser: boolean;
+  isRead: boolean;
+  onTickTransition?: () => void;
+}) => {
+  const tone = "rgba(255,255,255,0.45)";
+  return (
+    <View
+      style={[
+        styles.metaRow,
+        // assistant: time stays left. user: time + tick pushed right.
+        isUser ? styles.metaRowUser : styles.metaRowAssistant,
+      ]}
+    >
+      <Text style={[styles.metaTime, { color: tone }]}>{time}</Text>
+      {isUser && (
+        <View style={styles.metaTick}>
+          <AnimatedTicks isRead={isRead} color={tone} onTransition={onTickTransition} />
+        </View>
+      )}
+    </View>
+  );
+};
+
 const MessageItem = React.memo(
-  function MessageItem({ item, isActiveMatch, searchQuery, lunaProfile, onImagePress }: MessageItemProps) {
+  function MessageItem({ item, isActiveMatch, searchQuery, lunaProfile, onImagePress, isRead, onTickTransition, onLongPressMessage }: MessageItemProps) {
     const isUser = item.role === "user";
     const hasImage = !!item.imageUri;
     const hasAudio = !!item.audioUri;
@@ -244,13 +347,49 @@ const MessageItem = React.memo(
         )}
         <View style={isUser ? styles.bubbleColumnUser : styles.bubbleColumnAssistant}>
           {hasAudio && item.audioUri ? (
-            <VoiceNoteBubble
-              audioUri={item.audioUri}
-              durationMs={item.audioDurationMs ?? 0}
-              isUser={isUser}
-            />
+            // Long-press wrapper for voice bubbles. activeOpacity={1} so the
+            // bubble doesn't visually dim on tap (tap is a no-op here — the
+            // VoiceNoteBubble's own play button handles touches).
+            <TouchableOpacity
+              activeOpacity={1}
+              delayLongPress={350}
+              onLongPress={() => onLongPressMessage(item)}
+            >
+              <VoiceNoteBubble
+                audioUri={item.audioUri}
+                durationMs={item.audioDurationMs ?? 0}
+                isUser={isUser}
+              />
+            </TouchableOpacity>
+          ) : hasImage && !content ? (
+            // photo-only: the image itself is the bubble. Long-press triggers
+            // delete; tap opens the fullscreen viewer.
+            <View style={styles.photoOnlyBubble}>
+              <TouchableOpacity
+                activeOpacity={0.85}
+                delayLongPress={350}
+                onPress={() => onImagePress(item.imageUri!)}
+                onLongPress={() => onLongPressMessage(item)}
+              >
+                <Image
+                  source={{ uri: item.imageUri! }}
+                  style={[
+                    styles.messageImage,
+                    isUser ? styles.messageImageUserStandalone : styles.messageImageAssistantStandalone,
+                  ]}
+                  resizeMode="cover"
+                />
+              </TouchableOpacity>
+            </View>
           ) : (
-            <View
+            // text bubble (with optional image+caption). Long-press anywhere
+            // on the bubble triggers delete. Inner image keeps its own onPress
+            // for the viewer; long-press bubbles up since the inner doesn't
+            // define one.
+            <TouchableOpacity
+              activeOpacity={1}
+              delayLongPress={350}
+              onLongPress={() => onLongPressMessage(item)}
               style={[
                 styles.messageBubble,
                 isUser ? styles.userBubble : styles.assistantBubble,
@@ -277,16 +416,16 @@ const MessageItem = React.memo(
                   {content}
                 </View>
               )}
-            </View>
+            </TouchableOpacity>
           )}
-          <Text
-            style={[
-              styles.timestamp,
-              isUser ? styles.timestampUser : styles.timestampAssistant,
-            ]}
-          >
-            {formatTime(item.timestamp)}
-          </Text>
+          {/* unified meta row sits below every bubble (text, photo, voice) so
+              spacing and alignment are consistent across all message types */}
+          <MessageMeta
+            time={formatTime(item.timestamp)}
+            isUser={isUser}
+            isRead={isRead}
+            onTickTransition={onTickTransition}
+          />
         </View>
       </AnimatedBubble>
     );
@@ -307,7 +446,6 @@ export const ChatScreen = () => {
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [isTyping, setIsTyping] = useState(false);
   const [isRestoringSubscription, setIsRestoringSubscription] = useState(false);
-  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [isRecordingPaused, setIsRecordingPaused] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
@@ -342,9 +480,7 @@ export const ChatScreen = () => {
   // jitter, and makes the input bar position stable across all three states.
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const lastKbHeight = useRef(0);
-  const PICKER_TOTAL = 380 + Math.max(insets.bottom, 0); // matches EmojiPicker
   const computeBottomTarget = () => {
-    if (showEmojiPicker) return PICKER_TOTAL;
     // Some Android devices report keyboardDidShow height EXCLUDING the gesture
     // nav inset. Adding insets.bottom guarantees the input clears the keyboard's
     // top on every device — at worst a tiny extra gap on devices that include
@@ -363,7 +499,7 @@ export const ChatScreen = () => {
       easing: Easing.inOut(Easing.cubic),
       useNativeDriver: false,
     }).start();
-  }, [showEmojiPicker, keyboardHeight, insets.bottom]);
+  }, [keyboardHeight, insets.bottom]);
 
   useEffect(() => {
     const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
@@ -417,6 +553,22 @@ export const ChatScreen = () => {
           ? require("../../assets/sounds/send.mp3")
           : require("../../assets/sounds/receive.mp3"),
         { volume: 0.4 }
+      );
+      await sound.playAsync();
+      sound.setOnPlaybackStatusUpdate((s) => {
+        if (s.isLoaded && s.didJustFinish) sound.unloadAsync();
+      });
+    } catch {}
+  }, []);
+
+  // played when a user-message tick crossfades from single → double.
+  // Reuses the existing send.mp3 at low volume + faster rate so it reads as a
+  // distinct "tick" rather than a second send. (No dedicated tick asset shipped.)
+  const playTick = useCallback(async () => {
+    try {
+      const { sound } = await Audio.Sound.createAsync(
+        require("../../assets/sounds/send.mp3"),
+        { volume: 0.18, rate: 1.6, shouldCorrectPitch: false },
       );
       await sound.playAsync();
       sound.setOnPlaybackStatusUpdate((s) => {
@@ -669,8 +821,6 @@ export const ChatScreen = () => {
     const uri = await stopRecording();
     if (!uri) return;
 
-    Keyboard.dismiss();
-
     // optimistic display: show the voice note bubble immediately
     const userMessage: DisplayMessage = {
       id: `user-voice-${Date.now()}`,
@@ -723,7 +873,8 @@ export const ChatScreen = () => {
 
     const userText = input.trim();
     setInput("");
-    Keyboard.dismiss();
+    // Keep the keyboard open after send so the user can keep typing without
+    // tapping back into the input.
 
     // add user message
     const userMessage: DisplayMessage = {
@@ -909,14 +1060,11 @@ export const ChatScreen = () => {
   // start typing immediately, but don't auto-send.
   const stageImageForCaption = (uri: string) => {
     setPendingImageUri(uri);
-    setShowEmojiPicker(false);
     setTimeout(() => inputRef.current?.focus(), 80);
   };
 
   // send image message
   const sendImageMessage = async (imageUri: string) => {
-    Keyboard.dismiss();
-
     // clear staging state immediately so the preview disappears
     setPendingImageUri(null);
 
@@ -992,10 +1140,6 @@ export const ChatScreen = () => {
     setViewerImageUri(uri);
   }, []);
 
-  const handleEmojiSelect = useCallback((emoji: string) => {
-    setInput((prev) => prev + emoji);
-  }, []);
-
   // Coalesce streaming size-change events into one scroll per frame. Animated
   // scrolls during streaming pile up (each new chunk interrupts the prior
   // animation) — instant scroll + RAF throttle gives a smooth follow-the-tail.
@@ -1026,7 +1170,7 @@ export const ChatScreen = () => {
   // states either own the bottom area or mean "scroll-to-bottom" isn't
   // what the user wants right now.
   const scrollDownShouldDisplay =
-    scrollDownVisible && !showEmojiPicker && !isRecording && !pendingImageUri;
+    scrollDownVisible && !isRecording && !pendingImageUri;
 
   // fade the scroll-down pill in/out when its visibility flips
   useEffect(() => {
@@ -1053,6 +1197,73 @@ export const ChatScreen = () => {
     });
   }, []);
 
+  // Tick state per user message. A user message lands as "single tick" (just
+  // sent), then ~450ms later auto-promotes to "double tick" (delivered) with
+  // a small crossfade animation in the bubble. This is purely cosmetic — there's
+  // no real delivery receipt — but it matches the IM patterns users expect.
+  const [deliveredIds, setDeliveredIds] = useState<Set<string>>(() => new Set());
+  const lastSeenIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    // find the newest user message we haven't promoted yet, schedule it
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role !== "user") continue;
+      if (deliveredIds.has(m.id)) return;
+      if (lastSeenIdRef.current === m.id) return;
+      lastSeenIdRef.current = m.id;
+      const id = m.id;
+      const t = setTimeout(() => {
+        setDeliveredIds((prev) => {
+          if (prev.has(id)) return prev;
+          const next = new Set(prev);
+          next.add(id);
+          return next;
+        });
+      }, 450);
+      return () => clearTimeout(t);
+    }
+  }, [messages, deliveredIds]);
+
+  // On initial history load, mark every existing user message as delivered so
+  // restored chats don't all animate at once on mount.
+  const didHydrateTicksRef = useRef(false);
+  useEffect(() => {
+    if (didHydrateTicksRef.current) return;
+    if (messages.length === 0) return;
+    didHydrateTicksRef.current = true;
+    setDeliveredIds(new Set(messages.filter((m) => m.role === "user").map((m) => m.id)));
+  }, [messages]);
+
+  // Long-press → confirm dialog → delete from local message list AND from
+  // chat-service history (so the model doesn't keep "remembering" a message
+  // the user explicitly removed). Works for both user and Luna messages.
+  const handleLongPressMessage = useCallback((item: DisplayMessage) => {
+    Haptics.selectionAsync().catch(() => {});
+    showAlert({
+      title: "Delete message?",
+      message: "This will remove the message from this chat.",
+      buttons: [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            // remove from on-screen list
+            setMessages((prev) => prev.filter((m) => m.id !== item.id));
+            // remove from chat-service history so the model's next request
+            // doesn't include it. Match by role + content (the chat service
+            // doesn't carry our DisplayMessage ids).
+            try {
+              await deleteMessageFromHistory(item.role, item.content);
+            } catch (e) {
+              console.warn("delete from chat history failed:", e);
+            }
+          },
+        },
+      ],
+    });
+  }, []);
+
   const renderMessage = useCallback(
     ({ item }: { item: DisplayMessage }) => (
       <MessageItem
@@ -1061,9 +1272,12 @@ export const ChatScreen = () => {
         searchQuery={searchQuery}
         lunaProfile={lunaProfile}
         onImagePress={handleImagePress}
+        isRead={item.role === "user" && deliveredIds.has(item.id)}
+        onTickTransition={playTick}
+        onLongPressMessage={handleLongPressMessage}
       />
     ),
-    [activeMatchId, searchQuery, lunaProfile, handleImagePress],
+    [activeMatchId, searchQuery, lunaProfile, handleImagePress, deliveredIds, playTick, handleLongPressMessage],
   );
 
   // onboarding screen
@@ -1281,67 +1495,55 @@ export const ChatScreen = () => {
             </View>
           ) : (
             <View style={styles.inputRow}>
-              {/* emoji / keyboard toggle */}
+              {/* attach (camera/gallery) — primary left action */}
               <TouchableOpacity
                 style={styles.inputIconBtn}
                 onPress={() => {
-                  if (showEmojiPicker) {
-                    // closing picker → opening keyboard.
-                    // Pre-set keyboardHeight optimistically using the cached
-                    // last-known value so the bottomSpace animation can begin
-                    // immediately (in sync with the system keyboard rising).
-                    setShowEmojiPicker(false);
-                    if (lastKbHeight.current > 0) {
-                      setKeyboardHeight(lastKbHeight.current);
-                    }
-                    inputRef.current?.focus();
-                  } else {
-                    // closing keyboard → opening picker.
-                    // Eagerly clear keyboardHeight so the single bottomSpace
-                    // animation runs once from kbHeight → PICKER_TOTAL.
-                    setKeyboardHeight(0);
-                    Keyboard.dismiss();
-                    setShowEmojiPicker(true);
-                  }
+                  Keyboard.dismiss();
+                  setShowImageSheet(true);
                 }}
                 disabled={isLoading}
               >
                 <Ionicons
-                  name={showEmojiPicker ? "keypad-outline" : "happy-outline"}
+                  name="attach-outline"
                   size={26}
-                  color="rgba(255,255,255,0.6)"
+                  color={isLoading ? "#444" : "rgba(255,255,255,0.6)"}
                 />
               </TouchableOpacity>
 
-              {/* text input pill */}
+              {/* text input pill — stays editable while Luna is replying so the
+                  user can compose the next message; sendMessage's own isLoading
+                  guard prevents accidental double-sends until Luna's reply lands. */}
               <View style={styles.inputPill}>
                 <TextInput
                   ref={inputRef}
                   value={input}
                   onChangeText={setInput}
-                  onFocus={() => setShowEmojiPicker(false)}
                   placeholder="Message..."
                   placeholderTextColor="rgba(255,255,255,0.35)"
                   style={styles.input}
                   multiline
                   maxLength={500}
-                  editable={!isLoading}
                 />
-                <View style={styles.pillActions}>
-                  <TouchableOpacity onPress={() => { Keyboard.dismiss(); setShowImageSheet(true); }} disabled={isLoading} style={styles.pillIcon}>
-                    <Ionicons name="attach-outline" size={22} color={isLoading ? "#444" : "rgba(255,255,255,0.5)"} />
-                  </TouchableOpacity>
-                </View>
               </View>
 
               {/* right action: send OR mic OR transcribing spinner.
-                  staged photo → send (even with empty caption) */}
+                  staged photo → send (even with empty caption).
+                  send/mic dim while isLoading to make the disabled state obvious. */}
               {input.trim() || pendingImageUri ? (
-                <TouchableOpacity style={styles.sendBtn} onPress={sendMessage} disabled={isLoading}>
+                <TouchableOpacity
+                  style={[styles.sendBtn, isLoading && styles.sendBtnDisabled]}
+                  onPress={sendMessage}
+                  disabled={isLoading}
+                >
                   <Ionicons name="send" size={19} color="#fff" />
                 </TouchableOpacity>
               ) : (
-                <TouchableOpacity style={styles.sendBtn} onPress={handleVoiceTap} disabled={isLoading}>
+                <TouchableOpacity
+                  style={[styles.sendBtn, isLoading && styles.sendBtnDisabled]}
+                  onPress={handleVoiceTap}
+                  disabled={isLoading}
+                >
                   <Ionicons name="mic" size={21} color="#fff" />
                 </TouchableOpacity>
               )}
@@ -1359,14 +1561,7 @@ export const ChatScreen = () => {
             height: bottomSpace,
             overflow: "hidden",
           }}
-        >
-          {showEmojiPicker && (
-            <EmojiPicker
-              visible={showEmojiPicker}
-              onSelect={handleEmojiSelect}
-            />
-          )}
-        </Animated.View>
+        />
       </View>
 
       {/* settings screen overlay */}
@@ -1596,25 +1791,55 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     maxWidth: "85%",
   },
-  // small time text under each message — WhatsApp style
-  timestamp: {
+  // time + tick row, sits BELOW the bubble. assistant → left, user → right.
+  metaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 2,
+  },
+  metaRowUser: {
+    alignSelf: "flex-end",
+    marginLeft: "auto",
+    paddingLeft: 8,
+  },
+  metaRowAssistant: {
+    alignSelf: "flex-start",
+    marginRight: "auto",
+    paddingRight: 8,
+  },
+  // tick crossfade stack: single + double tick share the same slot, faded
+  // between via opacity. Width matches the double-tick glyph so layout doesn't
+  // shift mid-animation.
+  tickStack: {
+    width: 16,
+    height: 14,
+  },
+  tickAbsolute: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+  },
+  metaTime: {
     fontSize: 11,
-    color: "rgba(255,255,255,0.4)",
-    marginTop: 3,
-    marginHorizontal: 4,
+    fontWeight: "400",
   },
-  timestampUser: {
-    textAlign: "right",
+  metaTick: {
+    marginLeft: 3,
   },
-  timestampAssistant: {
-    textAlign: "left",
-  },
-  // image in message
+  // image in message — bubble width is locked to the image width so the caption
+  // wraps inside the photo's column instead of stretching the bubble wider than
+  // the image (which left a visible solid-color band beside the image).
   imageBubble: {
     padding: 0,
     paddingHorizontal: 0,
     paddingVertical: 0,
     overflow: "hidden",
+    width: 240,
+  },
+  // photo-only bubble: no purple wrap, image is the bubble
+  photoOnlyBubble: {
+    overflow: "hidden",
+    borderRadius: 18,
   },
   // image gets explicit rounded corners matching its bubble shape so Android's
   // unreliable `overflow:hidden + borderRadius` clipping doesn't bleed past
@@ -1632,6 +1857,20 @@ const styles = StyleSheet.create({
   messageImageAssistant: {
     borderBottomLeftRadius: 4,
     borderBottomRightRadius: 22,
+  },
+  // standalone (no caption, no purple wrap) — Telegram-style with one slightly
+  // sharper corner on the originating side for the chat-tail feel
+  messageImageUserStandalone: {
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    borderBottomLeftRadius: 18,
+    borderBottomRightRadius: 6,
+  },
+  messageImageAssistantStandalone: {
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    borderBottomLeftRadius: 6,
+    borderBottomRightRadius: 18,
   },
   imageCaption: {
     marginTop: 0,
@@ -1760,14 +1999,6 @@ const styles = StyleSheet.create({
     maxHeight: 100,
     minHeight: 36,
   },
-  pillActions: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingBottom: 2,
-  },
-  pillIcon: {
-    padding: 6,
-  },
   sendBtn: {
     width: 44,
     height: 44,
@@ -1778,6 +2009,12 @@ const styles = StyleSheet.create({
   },
   sendBtnRecording: {
     backgroundColor: "#e11d48",
+  },
+  // dimmed state while Luna is replying — input stays editable, but the send/mic
+  // is visibly disabled so the user knows the message will queue, not fire.
+  sendBtnDisabled: {
+    backgroundColor: "#3a2a5a",
+    opacity: 0.6,
   },
   recordingBar: {
     flexDirection: "row",
