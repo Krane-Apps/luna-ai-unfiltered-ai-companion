@@ -1,6 +1,6 @@
 // settings screen with modern ios-style design
 
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import {
   View,
   Text,
@@ -10,7 +10,9 @@ import {
   TextInput,
   Linking,
   StatusBar,
-  Image
+  Image,
+  Animated,
+  Pressable,
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons'
@@ -32,6 +34,190 @@ const INTERESTS_OPTIONS = [
   'Sports', 'Art', 'Technology', 'Fashion', 'Fitness'
 ]
 
+// staggered fade + slide-up wrapper for each section on mount
+const AnimatedSection = ({
+  children,
+  delay = 0,
+  style,
+}: {
+  children: React.ReactNode
+  delay?: number
+  style?: any
+}) => {
+  const opacity = useRef(new Animated.Value(0)).current
+  const translateY = useRef(new Animated.Value(18)).current
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(opacity, {
+        toValue: 1,
+        duration: 380,
+        delay,
+        useNativeDriver: true,
+      }),
+      Animated.spring(translateY, {
+        toValue: 0,
+        delay,
+        friction: 9,
+        tension: 70,
+        useNativeDriver: true,
+      }),
+    ]).start()
+  }, [])
+
+  return (
+    <Animated.View style={[{ opacity, transform: [{ translateY }] }, style]}>
+      {children}
+    </Animated.View>
+  )
+}
+
+// interest chip with spring-pop on tap + smooth color transition
+const AnimatedChip = ({
+  label,
+  active,
+  disabled,
+  onPress,
+}: {
+  label: string
+  active: boolean
+  disabled: boolean
+  onPress: () => void
+}) => {
+  const scale = useRef(new Animated.Value(1)).current
+
+  const handlePressIn = () => {
+    if (disabled) return
+    Animated.spring(scale, {
+      toValue: 0.92,
+      friction: 5,
+      tension: 220,
+      useNativeDriver: true,
+    }).start()
+  }
+  const handlePressOut = () => {
+    if (disabled) return
+    Animated.spring(scale, {
+      toValue: 1,
+      friction: 3,
+      tension: 180,
+      useNativeDriver: true,
+    }).start()
+  }
+
+  return (
+    <Pressable
+      onPressIn={handlePressIn}
+      onPressOut={handlePressOut}
+      onPress={onPress}
+      disabled={disabled}
+    >
+      <Animated.View
+        style={[
+          styles.interestChip,
+          active && styles.interestChipActive,
+          { transform: [{ scale }] },
+        ]}
+      >
+        <Text style={[styles.interestText, active && styles.interestTextActive]}>
+          {label}
+        </Text>
+      </Animated.View>
+    </Pressable>
+  )
+}
+
+// pressable card with subtle scale-down on press for tactile feedback
+const PressableCard = ({
+  children,
+  onPress,
+  style,
+  disabled,
+}: {
+  children: React.ReactNode
+  onPress?: () => void
+  style?: any
+  disabled?: boolean
+}) => {
+  const scale = useRef(new Animated.Value(1)).current
+
+  return (
+    <Pressable
+      onPressIn={() =>
+        !disabled &&
+        Animated.spring(scale, {
+          toValue: 0.97,
+          friction: 6,
+          tension: 280,
+          useNativeDriver: true,
+        }).start()
+      }
+      onPressOut={() =>
+        !disabled &&
+        Animated.spring(scale, {
+          toValue: 1,
+          friction: 4,
+          tension: 120,
+          useNativeDriver: true,
+        }).start()
+      }
+      onPress={onPress}
+      disabled={disabled || !onPress}
+    >
+      <Animated.View style={[style, { transform: [{ scale }] }]}>
+        {children}
+      </Animated.View>
+    </Pressable>
+  )
+}
+
+// menu row with subtle background flash on press
+const PressableRow = ({
+  children,
+  onPress,
+  style,
+}: {
+  children: React.ReactNode
+  onPress: () => void
+  style?: any
+}) => {
+  const bg = useRef(new Animated.Value(0)).current
+
+  return (
+    <Pressable
+      onPressIn={() =>
+        Animated.timing(bg, {
+          toValue: 1,
+          duration: 120,
+          useNativeDriver: false,
+        }).start()
+      }
+      onPressOut={() =>
+        Animated.timing(bg, {
+          toValue: 0,
+          duration: 220,
+          useNativeDriver: false,
+        }).start()
+      }
+      onPress={onPress}
+    >
+      <Animated.View
+        style={[
+          style,
+          {
+            backgroundColor: bg.interpolate({
+              inputRange: [0, 1],
+              outputRange: ['rgba(255,255,255,0)', 'rgba(255,255,255,0.04)'],
+            }),
+          },
+        ]}
+      >
+        {children}
+      </Animated.View>
+    </Pressable>
+  )
+}
+
 export const SettingsScreen = ({ onClose, onShowRefundPolicy, onUpgradeToLifetime, onLogout }: SettingsScreenProps) => {
   const insets = useSafeAreaInsets()
   const [profile, setProfile] = useState<UserProfile | null>(null)
@@ -44,6 +230,39 @@ export const SettingsScreen = ({ onClose, onShowRefundPolicy, onUpgradeToLifetim
   const [boundaries, setBoundaries] = useState('')
   const [showUpgradeSheet, setShowUpgradeSheet] = useState(false)
   const [isUpgrading, setIsUpgrading] = useState(false)
+
+  // animated flirt-bar fill width (0..1) — springs to new value when level changes
+  const flirtBarAnim = useRef(new Animated.Value((flirtLevel - 1) / 4)).current
+  useEffect(() => {
+    Animated.spring(flirtBarAnim, {
+      toValue: Math.max(0, (flirtLevel - 1) / 4),
+      friction: 9,
+      tension: 80,
+      useNativeDriver: false,
+    }).start()
+  }, [flirtLevel])
+
+  // subtle pulse on the upgrade card to draw attention
+  const upgradeGlow = useRef(new Animated.Value(0)).current
+  useEffect(() => {
+    if (profile?.hasLifetimeAccess) return
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(upgradeGlow, {
+          toValue: 1,
+          duration: 1600,
+          useNativeDriver: false,
+        }),
+        Animated.timing(upgradeGlow, {
+          toValue: 0,
+          duration: 1600,
+          useNativeDriver: false,
+        }),
+      ]),
+    )
+    loop.start()
+    return () => loop.stop()
+  }, [profile?.hasLifetimeAccess])
 
   useEffect(() => {
     const loadProfile = () => {
@@ -179,23 +398,25 @@ export const SettingsScreen = ({ onClose, onShowRefundPolicy, onUpgradeToLifetim
         contentContainerStyle={styles.scrollContent}
       >
         {/* profile header card */}
-        <View style={styles.profileCard}>
-          <Image
-            source={require('../../assets/icon.png')}
-            style={styles.profileAvatar}
-          />
-          <View style={styles.profileInfo}>
-            <Text style={styles.profileName}>{name || 'Your Name'}</Text>
-            <Text style={styles.profileStatus}>
-              {profile?.hasLifetimeAccess ? 'Lifetime Member' : 'Free Trial'}
-            </Text>
-          </View>
-          {profile?.hasLifetimeAccess && (
-            <View style={styles.lifetimeBadge}>
-              <Ionicons name="star" size={14} color="#fff" />
+        <AnimatedSection delay={0}>
+          <PressableCard style={styles.profileCard}>
+            <Image
+              source={require('../../assets/icon.png')}
+              style={styles.profileAvatar}
+            />
+            <View style={styles.profileInfo}>
+              <Text style={styles.profileName}>{name || 'Your Name'}</Text>
+              <Text style={styles.profileStatus}>
+                {profile?.hasLifetimeAccess ? 'Lifetime Member' : 'Free Trial'}
+              </Text>
             </View>
-          )}
-        </View>
+            {profile?.hasLifetimeAccess && (
+              <View style={styles.lifetimeBadge}>
+                <Ionicons name="star" size={14} color="#fff" />
+              </View>
+            )}
+          </PressableCard>
+        </AnimatedSection>
 
         {/* cancel edit button */}
         {editMode && (
@@ -205,7 +426,7 @@ export const SettingsScreen = ({ onClose, onShowRefundPolicy, onUpgradeToLifetim
         )}
 
         {/* profile details section */}
-        <View style={styles.section}>
+        <AnimatedSection delay={60} style={styles.section}>
           <Text style={styles.sectionHeader}>Profile</Text>
           <View style={styles.card}>
             <View style={styles.cardRow}>
@@ -267,40 +488,31 @@ export const SettingsScreen = ({ onClose, onShowRefundPolicy, onUpgradeToLifetim
               )}
             </View>
           </View>
-        </View>
+        </AnimatedSection>
 
         {/* interests section */}
-        <View style={styles.section}>
+        <AnimatedSection delay={120} style={styles.section}>
           <Text style={styles.sectionHeader}>Interests</Text>
           <View style={styles.card}>
             <View style={styles.interestsContainer}>
-              {INTERESTS_OPTIONS.map(interest => (
-                <TouchableOpacity
+              {INTERESTS_OPTIONS.map((interest) => (
+                <AnimatedChip
                   key={interest}
-                  style={[
-                    styles.interestChip,
-                    interests.includes(interest) && styles.interestChipActive
-                  ]}
-                  onPress={() => editMode && toggleInterest(interest)}
-                  activeOpacity={editMode ? 0.7 : 1}
-                >
-                  <Text style={[
-                    styles.interestText,
-                    interests.includes(interest) && styles.interestTextActive
-                  ]}>
-                    {interest}
-                  </Text>
-                </TouchableOpacity>
+                  label={interest}
+                  active={interests.includes(interest)}
+                  disabled={!editMode}
+                  onPress={() => toggleInterest(interest)}
+                />
               ))}
             </View>
             {!editMode && interests.length === 0 && (
               <Text style={styles.emptyHint}>Tap Edit to add interests</Text>
             )}
           </View>
-        </View>
+        </AnimatedSection>
 
         {/* flirt level section */}
-        <View style={styles.section}>
+        <AnimatedSection delay={180} style={styles.section}>
           <Text style={styles.sectionHeader}>Flirt Level</Text>
           <View style={styles.card}>
             <View style={styles.flirtHeader}>
@@ -323,14 +535,24 @@ export const SettingsScreen = ({ onClose, onShowRefundPolicy, onUpgradeToLifetim
             )}
             {!editMode && (
               <View style={styles.flirtBar}>
-                <View style={[styles.flirtBarFill, { width: `${(flirtLevel / 5) * 100}%` }]} />
+                <Animated.View
+                  style={[
+                    styles.flirtBarFill,
+                    {
+                      width: flirtBarAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: ['0%', '100%'],
+                      }),
+                    },
+                  ]}
+                />
               </View>
             )}
           </View>
-        </View>
+        </AnimatedSection>
 
         {/* boundaries section */}
-        <View style={styles.section}>
+        <AnimatedSection delay={240} style={styles.section}>
           <Text style={styles.sectionHeader}>Topics to Avoid</Text>
           <View style={styles.card}>
             {editMode ? (
@@ -348,15 +570,14 @@ export const SettingsScreen = ({ onClose, onShowRefundPolicy, onUpgradeToLifetim
               </Text>
             )}
           </View>
-        </View>
+        </AnimatedSection>
 
         {/* upgrade to lifetime section */}
         {!hasLifetimeAccess() && onUpgradeToLifetime && (
-          <View style={styles.section}>
-            <TouchableOpacity
+          <AnimatedSection delay={300} style={styles.section}>
+            <PressableCard
               style={styles.upgradeCard}
               onPress={() => setShowUpgradeSheet(true)}
-              activeOpacity={0.8}
             >
               <View style={styles.upgradeBadge}>
                 <Text style={styles.upgradeBadgeText}>60% OFF</Text>
@@ -376,16 +597,28 @@ export const SettingsScreen = ({ onClose, onShowRefundPolicy, onUpgradeToLifetim
                 <Text style={styles.upgradeButtonText}>View Offer</Text>
                 <Ionicons name="chevron-forward" size={18} color="#fff" />
               </View>
-            </TouchableOpacity>
-          </View>
+            </PressableCard>
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.upgradeGlow,
+                {
+                  opacity: upgradeGlow.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [0.18, 0.45],
+                  }),
+                },
+              ]}
+            />
+          </AnimatedSection>
         )}
 
 
         {/* support section */}
-        <View style={styles.section}>
+        <AnimatedSection delay={360} style={styles.section}>
           <Text style={styles.sectionHeader}>Support</Text>
           <View style={styles.card}>
-            <TouchableOpacity style={styles.menuRow} onPress={openTelegram}>
+            <PressableRow style={styles.menuRow} onPress={openTelegram}>
               <View style={styles.menuRowLeft}>
                 <View style={[styles.menuIcon, { backgroundColor: '#5856D6' }]}>
                   <Ionicons name="chatbubbles" size={18} color="#fff" />
@@ -396,11 +629,11 @@ export const SettingsScreen = ({ onClose, onShowRefundPolicy, onUpgradeToLifetim
                 <Text style={styles.menuHint}>Telegram</Text>
                 <Ionicons name="chevron-forward" size={20} color="#3A3A3C" />
               </View>
-            </TouchableOpacity>
+            </PressableRow>
 
             <View style={styles.cardDivider} />
 
-            <TouchableOpacity style={styles.menuRow} onPress={onShowRefundPolicy}>
+            <PressableRow style={styles.menuRow} onPress={onShowRefundPolicy}>
               <View style={styles.menuRowLeft}>
                 <View style={[styles.menuIcon, { backgroundColor: '#34C759' }]}>
                   <Ionicons name="shield-checkmark" size={18} color="#fff" />
@@ -411,12 +644,12 @@ export const SettingsScreen = ({ onClose, onShowRefundPolicy, onUpgradeToLifetim
                 <Text style={styles.menuHint}>100%</Text>
                 <Ionicons name="chevron-forward" size={20} color="#3A3A3C" />
               </View>
-            </TouchableOpacity>
+            </PressableRow>
           </View>
-        </View>
+        </AnimatedSection>
 
         {/* about section */}
-        <View style={styles.section}>
+        <AnimatedSection delay={420} style={styles.section}>
           <Text style={styles.sectionHeader}>About</Text>
           <View style={styles.card}>
             <View style={styles.aboutRow}>
@@ -431,16 +664,16 @@ export const SettingsScreen = ({ onClose, onShowRefundPolicy, onUpgradeToLifetim
               </Text>
             </View>
           </View>
-        </View>
+        </AnimatedSection>
 
         {/* logout button */}
         {onLogout && (
-          <View style={styles.section}>
-            <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
+          <AnimatedSection delay={480} style={styles.section}>
+            <PressableCard style={styles.logoutButton} onPress={handleLogout}>
               <Ionicons name="log-out-outline" size={20} color="#FF3B30" />
               <Text style={styles.logoutText}>Log Out</Text>
-            </TouchableOpacity>
-          </View>
+            </PressableCard>
+          </AnimatedSection>
         )}
 
         <Text style={styles.footer}>Luna AI - Your AI Companion</Text>
@@ -789,6 +1022,22 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 32,
     marginBottom: 20
+  },
+  // soft pink halo behind the upgrade card — pulses to draw attention
+  upgradeGlow: {
+    position: 'absolute',
+    top: 0,
+    left: -8,
+    right: -8,
+    bottom: -8,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255,105,180,0.25)',
+    shadowColor: '#ff69b4',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 1,
+    shadowRadius: 24,
+    elevation: 0,
+    zIndex: -1,
   },
   // upgrade card styles
   upgradeCard: {

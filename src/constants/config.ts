@@ -1,6 +1,11 @@
 // configuration constants for luna ai
 
-import { HF_TOKEN as ENV_HF_TOKEN, TREASURY_WALLET as ENV_TREASURY_WALLET, BACKEND_URL as ENV_BACKEND_URL } from '@env'
+import {
+  HF_TOKEN as ENV_HF_TOKEN,
+  TREASURY_WALLET as ENV_TREASURY_WALLET,
+  BACKEND_URL as ENV_BACKEND_URL,
+  OPENAI_API_KEY as ENV_OPENAI_API_KEY,
+} from '@env'
 import { PaymentConfig } from '../types'
 
 // fallback treasury wallet
@@ -25,6 +30,7 @@ const getTreasuryWallet = (): string => {
 
 // api keys from environment variables
 export const HF_TOKEN = ENV_HF_TOKEN || ''
+export const OPENAI_API_KEY = ENV_OPENAI_API_KEY || ''
 
 // dev mode - shows bypass button and uses minimal payment amounts for testing
 // set to true for testing, false for production release
