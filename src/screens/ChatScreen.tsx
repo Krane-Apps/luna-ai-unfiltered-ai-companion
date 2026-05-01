@@ -8,13 +8,13 @@ import {
   Text,
   StyleSheet,
   Keyboard,
+  KeyboardAvoidingView,
   Platform,
   StatusBar,
   FlatList,
   Animated,
   Image,
   Linking,
-  Pressable,
   ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -30,7 +30,7 @@ import { LunaProfileModal, AvatarPreview, LunaProfile } from "../components/Luna
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { showAlert, AlertProvider } from "../components/AppAlert";
 import { ImageSourceSheet } from "../components/ImageSourceSheet";
-import { startRecording, stopRecording, transcribeAudio } from "../services/voice";
+import { startRecording, stopRecording, pauseRecording, resumeRecording, cancelRecording, transcribeAudio } from "../services/voice";
 import { setNotificationsMuted } from "../services/notifications";
 import { PaymentModal } from "../components/PaymentModal";
 import { RefundBottomSheet } from "../components/RefundBottomSheet";
@@ -135,7 +135,10 @@ export const ChatScreen = () => {
   const [isRestoringSubscription, setIsRestoringSubscription] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [isRecordingPaused, setIsRecordingPaused] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [showMenu, setShowMenu] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
@@ -155,26 +158,17 @@ export const ChatScreen = () => {
   const isMountedRef = useRef(true);
   const insets = useSafeAreaInsets();
   const menuTop = insets.top + 62;
-  const androidKbHeight = useRef(new Animated.Value(0)).current;
-  const [kbOpen, setKbOpen] = useState(false);
 
+  // Android: adjustNothing mode — track keyboard height with plain state
+  const [kbHeight, setKbHeight] = useState(0);
   useEffect(() => {
     if (Platform.OS !== "android") return;
     const show = Keyboard.addListener("keyboardDidShow", (e) => {
-      setKbOpen(true);
-      Animated.timing(androidKbHeight, {
-        toValue: e.endCoordinates.height,
-        duration: 0,
-        useNativeDriver: false,
-      }).start();
+      setKbHeight(e.endCoordinates.height);
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
     });
     const hide = Keyboard.addListener("keyboardDidHide", () => {
-      setKbOpen(false);
-      Animated.timing(androidKbHeight, {
-        toValue: 0,
-        duration: 0,
-        useNativeDriver: false,
-      }).start();
+      setKbHeight(0);
     });
     return () => { show.remove(); hide.remove(); };
   }, []);
@@ -391,15 +385,59 @@ export const ChatScreen = () => {
     }
   };
 
-  const handleVoicePressIn = async () => {
-    const started = await startRecording();
-    if (started) setIsRecording(true);
-    else showAlert({ title: "Permission Required", message: "Microphone access is needed to record voice messages.", icon: "warning" });
+  const startRecordingTimer = () => {
+    setRecordingSeconds(0);
+    recordingTimerRef.current = setInterval(() => {
+      setRecordingSeconds((s) => s + 1);
+    }, 1000);
   };
 
-  const handleVoicePressOut = async () => {
-    if (!isRecording) return;
+  const stopRecordingTimer = () => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+  };
+
+  const handleVoiceTap = async () => {
+    if (isRecording) return;
+    const started = await startRecording();
+    if (started) {
+      setIsRecording(true);
+      setIsRecordingPaused(false);
+      startRecordingTimer();
+    } else {
+      showAlert({ title: "Permission Required", message: "Microphone access is needed to record voice messages.", icon: "warning" });
+    }
+  };
+
+  const handleRecordingPauseResume = async () => {
+    if (isRecordingPaused) {
+      await resumeRecording();
+      setIsRecordingPaused(false);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds((s) => s + 1);
+      }, 1000);
+    } else {
+      await pauseRecording();
+      setIsRecordingPaused(true);
+      stopRecordingTimer();
+    }
+  };
+
+  const handleRecordingCancel = async () => {
+    stopRecordingTimer();
     setIsRecording(false);
+    setIsRecordingPaused(false);
+    setRecordingSeconds(0);
+    await cancelRecording();
+  };
+
+  const handleRecordingSend = async () => {
+    stopRecordingTimer();
+    setIsRecording(false);
+    setIsRecordingPaused(false);
+    setRecordingSeconds(0);
     setIsTranscribing(true);
     const uri = await stopRecording();
     if (uri) {
@@ -671,8 +709,12 @@ export const ChatScreen = () => {
   const renderMessage = ({ item }: { item: DisplayMessage }) => {
     const isUser = item.role === "user";
     const hasImage = !!item.imageUri;
+    // strip any instruction text that leaked into stored history from older versions
     const displayContent =
-      isUser && item.content.startsWith("[User sent an image")
+      isUser && (
+        item.content.startsWith("[User sent an image") ||
+        item.content.startsWith("[Image received")
+      )
         ? ""
         : item.content;
 
@@ -680,7 +722,6 @@ export const ChatScreen = () => {
     const textStyle = [
       styles.messageText,
       isUser ? styles.userMessageText : styles.assistantMessageText,
-      hasImage && styles.imageCaption,
     ];
 
     // render with highlighted search matches
@@ -733,7 +774,11 @@ export const ChatScreen = () => {
               resizeMode="cover"
             />
           )}
-          {displayContent.length > 0 && renderContent()}
+          {displayContent.length > 0 && (
+            <View style={hasImage ? styles.imageCaption : undefined}>
+              {renderContent()}
+            </View>
+          )}
         </View>
       </AnimatedBubble>
     );
@@ -847,7 +892,10 @@ export const ChatScreen = () => {
       )}
 
 
-      <Animated.View style={[styles.keyboardAvoid, { paddingBottom: Platform.OS === "android" ? androidKbHeight : 0 }]}>
+      <KeyboardAvoidingView
+        style={[styles.keyboardAvoid, Platform.OS === "android" && kbHeight > 0 && { marginBottom: kbHeight }]}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
         {/* message list */}
         <FlatList
           ref={flatListRef}
@@ -887,70 +935,96 @@ export const ChatScreen = () => {
         />
 
         {/* input section */}
-        <View style={[styles.inputContainer, { paddingBottom: kbOpen ? 8 : Math.max(insets.bottom, 12) }]}>
-          <View style={styles.inputRow}>
-            {/* emoji / keyboard toggle */}
-            <TouchableOpacity
-              style={styles.inputIconBtn}
-              onPress={() => {
-                if (showEmojiPicker) { setShowEmojiPicker(false); }
-                else { Keyboard.dismiss(); setShowEmojiPicker(true); }
-              }}
-              disabled={isLoading}
-            >
-              <Ionicons
-                name={showEmojiPicker ? "keypad-outline" : "happy-outline"}
-                size={26}
-                color="rgba(255,255,255,0.6)"
-              />
-            </TouchableOpacity>
-
-            {/* text input pill */}
-            <View style={styles.inputPill}>
-              <TextInput
-                value={input}
-                onChangeText={setInput}
-                onFocus={() => setShowEmojiPicker(false)}
-                placeholder="Message..."
-                placeholderTextColor="rgba(255,255,255,0.35)"
-                style={styles.input}
-                multiline
-                maxLength={500}
-                editable={!isLoading && !isRecording}
-              />
-              <View style={styles.pillActions}>
-                <TouchableOpacity onPress={() => { Keyboard.dismiss(); setShowImageSheet(true); }} disabled={isLoading} style={styles.pillIcon}>
-                  <Ionicons name="attach-outline" size={22} color={isLoading ? "#444" : "rgba(255,255,255,0.5)"} />
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            {/* right action: send OR mic */}
-            {input.trim() ? (
-              <TouchableOpacity
-                style={styles.sendBtn}
-                onPress={sendMessage}
-                disabled={isLoading}
-              >
-                <Ionicons name="send" size={19} color="#fff" />
+        <View style={[styles.inputContainer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+          {isRecording ? (
+            /* recording bar */
+            <View style={styles.recordingBar}>
+              {/* trash / cancel */}
+              <TouchableOpacity style={styles.recordingIconBtn} onPress={handleRecordingCancel}>
+                <Ionicons name="trash-outline" size={22} color="rgba(255,255,255,0.55)" />
               </TouchableOpacity>
-            ) : isTranscribing ? (
-              <View style={styles.sendBtn}>
-                <ActivityIndicator size="small" color="#fff" />
+
+              {/* timer */}
+              <Text style={styles.recordingTimer}>
+                {`${Math.floor(recordingSeconds / 60)}:${String(recordingSeconds % 60).padStart(2, "0")}`}
+              </Text>
+
+              {/* animated dots */}
+              <View style={styles.recordingDots}>
+                {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => (
+                  <View
+                    key={i}
+                    style={[styles.recordingDot, isRecordingPaused && styles.recordingDotPaused]}
+                  />
+                ))}
               </View>
-            ) : (
-              <Pressable
-                style={[styles.sendBtn, isRecording && styles.sendBtnRecording]}
-                onPressIn={handleVoicePressIn}
-                onPressOut={handleVoicePressOut}
+
+              {/* pause / resume */}
+              <TouchableOpacity style={styles.recordingIconBtn} onPress={handleRecordingPauseResume}>
+                <Ionicons name={isRecordingPaused ? "play" : "pause"} size={22} color="rgba(255,255,255,0.85)" />
+              </TouchableOpacity>
+
+              {/* send */}
+              <TouchableOpacity style={styles.recordingSendBtn} onPress={handleRecordingSend}>
+                <Ionicons name="arrow-forward" size={22} color="#fff" />
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={styles.inputRow}>
+              {/* emoji / keyboard toggle */}
+              <TouchableOpacity
+                style={styles.inputIconBtn}
+                onPress={() => {
+                  if (showEmojiPicker) { setShowEmojiPicker(false); }
+                  else { Keyboard.dismiss(); setShowEmojiPicker(true); }
+                }}
                 disabled={isLoading}
               >
-                <Ionicons name={isRecording ? "radio-button-on" : "mic"} size={21} color="#fff" />
-              </Pressable>
-            )}
-          </View>
+                <Ionicons
+                  name={showEmojiPicker ? "keypad-outline" : "happy-outline"}
+                  size={26}
+                  color="rgba(255,255,255,0.6)"
+                />
+              </TouchableOpacity>
+
+              {/* text input pill */}
+              <View style={styles.inputPill}>
+                <TextInput
+                  value={input}
+                  onChangeText={setInput}
+                  onFocus={() => setShowEmojiPicker(false)}
+                  placeholder="Message..."
+                  placeholderTextColor="rgba(255,255,255,0.35)"
+                  style={styles.input}
+                  multiline
+                  maxLength={500}
+                  editable={!isLoading}
+                />
+                <View style={styles.pillActions}>
+                  <TouchableOpacity onPress={() => { Keyboard.dismiss(); setShowImageSheet(true); }} disabled={isLoading} style={styles.pillIcon}>
+                    <Ionicons name="attach-outline" size={22} color={isLoading ? "#444" : "rgba(255,255,255,0.5)"} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* right action: send OR mic OR transcribing spinner */}
+              {input.trim() ? (
+                <TouchableOpacity style={styles.sendBtn} onPress={sendMessage} disabled={isLoading}>
+                  <Ionicons name="send" size={19} color="#fff" />
+                </TouchableOpacity>
+              ) : isTranscribing ? (
+                <View style={styles.sendBtn}>
+                  <ActivityIndicator size="small" color="#fff" />
+                </View>
+              ) : (
+                <TouchableOpacity style={styles.sendBtn} onPress={handleVoiceTap} disabled={isLoading}>
+                  <Ionicons name="mic" size={21} color="#fff" />
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
         </View>
-      </Animated.View>
+      </KeyboardAvoidingView>
 
       {/* emoji picker sheet */}
       <EmojiPicker
@@ -1165,18 +1239,21 @@ const styles = StyleSheet.create({
   },
   // image in message
   imageBubble: {
-    padding: 4,
+    padding: 0,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
     overflow: "hidden",
   },
   messageImage: {
-    width: 200,
-    height: 200,
-    borderRadius: 18,
+    width: 240,
+    height: 300,
+    borderRadius: 0,
   },
   imageCaption: {
-    marginTop: 8,
-    paddingHorizontal: 8,
-    paddingBottom: 4,
+    marginTop: 0,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 8,
   },
   // typing indicator
   typingContainer: {
@@ -1263,6 +1340,49 @@ const styles = StyleSheet.create({
   },
   sendBtnRecording: {
     backgroundColor: "#e11d48",
+  },
+  recordingBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    height: 52,
+    paddingHorizontal: 4,
+    gap: 6,
+  },
+  recordingIconBtn: {
+    width: 40,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  recordingTimer: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "600",
+    minWidth: 36,
+  },
+  recordingDots: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 4,
+  },
+  recordingDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: "rgba(255,255,255,0.55)",
+  },
+  recordingDotPaused: {
+    backgroundColor: "rgba(255,255,255,0.2)",
+  },
+  recordingSendBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#22c55e",
+    alignItems: "center",
+    justifyContent: "center",
   },
   // kept for any remaining references
   inputWrapper: {

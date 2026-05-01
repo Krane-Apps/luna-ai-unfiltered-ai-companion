@@ -1,75 +1,65 @@
-// vision service for analyzing images using huggingface router
+// vision service — image-to-text via HF router hf-inference (same as Whisper)
 
-import OpenAI from 'openai'
 import { HF_TOKEN } from '../constants/config'
 import * as FileSystem from 'expo-file-system/legacy'
-import { isNetworkError, showNetworkError } from './api'
 
-// use qwen vision model via openai-compatible api
-const VISION_MODEL = 'meta-llama/Llama-3.2-11B-Vision-Instruct'
+const BLIP_URL = 'https://router.huggingface.co/hf-inference/models/Salesforce/blip-image-captioning-large'
 
-let visionClient: OpenAI | null = null
-
-const getVisionClient = (): OpenAI => {
-  if (!visionClient) {
-    visionClient = new OpenAI({
-      baseURL: 'https://router.huggingface.co/v1',
-      apiKey: HF_TOKEN,
-      dangerouslyAllowBrowser: true
-    })
-  }
-  return visionClient
-}
-
-// analyze image and return description
+// analyze image — returns a plain-English description Luna can react to
 export const analyzeImage = async (imageUri: string): Promise<string> => {
   try {
-    // read image as base64 using legacy api (sdk 54+)
-    const base64 = await FileSystem.readAsStringAsync(imageUri, {
-      encoding: FileSystem.EncodingType.Base64
+    const ext = imageUri.split('?')[0].split('.').pop()?.toLowerCase()
+    const mime =
+      ext === 'png'  ? 'image/png'  :
+      ext === 'gif'  ? 'image/gif'  :
+      ext === 'webp' ? 'image/webp' :
+      'image/jpeg'
+
+    // uploadAsync sends raw binary directly from the file path — no fetch(data:) hacks
+    const result = await FileSystem.uploadAsync(BLIP_URL, imageUri, {
+      httpMethod: 'POST',
+      uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+      headers: {
+        Authorization: `Bearer ${HF_TOKEN}`,
+        'Content-Type': mime,
+      },
     })
 
-    // create data url for the image
-    const imageDataUrl = `data:image/jpeg;base64,${base64}`
+    if (result.status !== 200) {
+      console.warn('[Vision] API error:', result.status, result.body?.slice(0, 200))
 
-    const client = getVisionClient()
-
-    // use openai-compatible vision api
-    const response = await client.chat.completions.create({
-      model: VISION_MODEL,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: 'Describe this image in one short sentence. Be concise.'
-            },
-            {
-              type: 'image_url',
-              image_url: { url: imageDataUrl }
-            }
-          ]
+      // model cold-starting — retry once after 8s
+      if (result.status === 503) {
+        console.log('[Vision] model loading, retrying in 8s...')
+        await new Promise((r) => setTimeout(r, 8000))
+        const retry = await FileSystem.uploadAsync(BLIP_URL, imageUri, {
+          httpMethod: 'POST',
+          uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+          headers: {
+            Authorization: `Bearer ${HF_TOKEN}`,
+            'Content-Type': mime,
+          },
+        })
+        if (retry.status === 200) {
+          const retryData = JSON.parse(retry.body) as Array<{ generated_text?: string }>
+          const caption = retryData[0]?.generated_text?.trim()
+          if (caption) { console.log('[Vision] retry caption:', caption); return caption }
         }
-      ],
-      max_tokens: 100
-    })
+      }
+      return 'an image'
+    }
 
-    const caption = response.choices[0]?.message?.content?.trim()
+    const data = JSON.parse(result.body) as Array<{ generated_text?: string }>
+    const caption = data[0]?.generated_text?.trim()
 
     if (caption) {
-      console.log('image analysis:', caption)
+      console.log('[Vision] caption:', caption)
       return caption
     }
 
     return 'an image'
   } catch (error) {
-    if (isNetworkError(error)) {
-      console.warn('[Vision] network error')
-      showNetworkError()
-    } else {
-      console.error('failed to analyze image:', error)
-    }
+    console.warn('[Vision] failed, continuing without caption:', error)
     return 'an image'
   }
 }
@@ -78,7 +68,7 @@ export const analyzeImage = async (imageUri: string): Promise<string> => {
 export const imageToBase64 = async (imageUri: string): Promise<string | null> => {
   try {
     const base64 = await FileSystem.readAsStringAsync(imageUri, {
-      encoding: FileSystem.EncodingType.Base64
+      encoding: FileSystem.EncodingType.Base64,
     })
     return base64
   } catch (error) {
