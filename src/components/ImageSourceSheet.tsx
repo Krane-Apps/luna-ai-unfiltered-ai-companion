@@ -25,6 +25,7 @@ export const ImageSourceSheet = ({ visible, onCamera, onGallery, onClose }: Prop
   const translateY = useRef(new Animated.Value(SH)).current;
   const backdropOpacity = useRef(new Animated.Value(0)).current;
   const [mounted, setMounted] = React.useState(false);
+  const pendingActionRef = useRef<(() => void) | null>(null);
   const insets = useSafeAreaInsets();
 
   useEffect(() => {
@@ -38,15 +39,25 @@ export const ImageSourceSheet = ({ visible, onCamera, onGallery, onClose }: Prop
       Animated.parallel([
         Animated.timing(backdropOpacity, { toValue: 0, duration: 180, useNativeDriver: true }),
         Animated.timing(translateY, { toValue: SH, duration: 200, useNativeDriver: true }),
-      ]).start(() => setMounted(false));
+      ]).start(({ finished }) => {
+        if (!finished) return;
+        setMounted(false);
+        const action = pendingActionRef.current;
+        if (action) {
+          pendingActionRef.current = null;
+          // wait one frame after the modal unmounts so the native picker UI
+          // doesn't race the exit animation
+          requestAnimationFrame(action);
+        }
+      });
     }
   }, [visible]);
 
   if (!mounted && !visible) return null;
 
   const handleOption = (fn: () => void) => {
+    pendingActionRef.current = fn;
     onClose();
-    setTimeout(fn, 220);
   };
 
   return (

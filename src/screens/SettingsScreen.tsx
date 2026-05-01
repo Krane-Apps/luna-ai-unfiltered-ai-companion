@@ -70,9 +70,29 @@ export const SettingsScreen = ({ onClose, onShowRefundPolicy, onUpgradeToLifetim
   }
 
   const handleSave = async () => {
+    // 18+ gate — Luna is an unfiltered companion, no underage users allowed.
+    // mirrors the onboarding check so age can't be lowered post-onboarding.
+    const parsedAge = parseInt(age, 10)
+    if (!parsedAge || parsedAge < 18) {
+      showAlert({
+        title: 'Age Restricted',
+        message: 'You must be 18 or older to use Luna.',
+        icon: 'warning',
+      })
+      return
+    }
+    if (parsedAge > 120) {
+      showAlert({
+        title: 'Invalid Age',
+        message: 'Please enter a valid age.',
+        icon: 'warning',
+      })
+      return
+    }
+
     await updateUserProfile({
       userName: name,
-      userAge: parseInt(age, 10) || 0,
+      userAge: parsedAge,
       userInterests: interests,
       flirtLevel,
       relationshipStatus: relationshipStatus || undefined,

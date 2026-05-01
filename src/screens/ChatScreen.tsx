@@ -1,6 +1,6 @@
 // chat screen with chatgpt-style message interface
 
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
   View,
   TextInput,
@@ -16,6 +16,9 @@ import {
   Image,
   Linking,
   ActivityIndicator,
+  Easing,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
@@ -30,6 +33,7 @@ import { LunaProfileModal, AvatarPreview, LunaProfile } from "../components/Luna
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { showAlert, AlertProvider } from "../components/AppAlert";
 import { ImageSourceSheet } from "../components/ImageSourceSheet";
+import { ImageViewerModal } from "../components/ImageViewerModal";
 import { startRecording, stopRecording, pauseRecording, resumeRecording, cancelRecording, transcribeAudio } from "../services/voice";
 import { setNotificationsMuted } from "../services/notifications";
 import { PaymentModal } from "../components/PaymentModal";
@@ -73,18 +77,29 @@ interface DisplayMessage {
   imageUri?: string;
 }
 
+// Tracks which message ids have already played their entry animation so that
+// scrolling them out and back into the FlatList window doesn't re-trigger it.
+const animatedMessageIds = new Set<string>();
+
 const AnimatedBubble = ({
+  itemId,
   isUser,
   children,
 }: {
+  itemId: string;
   isUser: boolean;
   children: React.ReactNode;
 }) => {
-  const translateX = useRef(new Animated.Value(isUser ? 60 : -60)).current;
-  const opacity = useRef(new Animated.Value(0)).current;
-  const scale = useRef(new Animated.Value(0.85)).current;
+  const hasAnimated = animatedMessageIds.has(itemId);
+  const translateX = useRef(
+    new Animated.Value(hasAnimated ? 0 : isUser ? 60 : -60),
+  ).current;
+  const opacity = useRef(new Animated.Value(hasAnimated ? 1 : 0)).current;
+  const scale = useRef(new Animated.Value(hasAnimated ? 1 : 0.85)).current;
 
   useEffect(() => {
+    if (hasAnimated) return;
+    animatedMessageIds.add(itemId);
     Animated.parallel([
       Animated.timing(opacity, {
         toValue: 1,
@@ -118,6 +133,132 @@ const AnimatedBubble = ({
     </Animated.View>
   );
 };
+
+const AnimatedKAV = Animated.createAnimatedComponent(KeyboardAvoidingView);
+
+const messageKeyExtractor = (item: DisplayMessage) => item.id;
+
+const EmptyList = () => (
+  <View style={styles.emptyContainer}>
+    <Text style={styles.emptyText}>Start chatting with Luna!</Text>
+  </View>
+);
+
+const TypingIndicator = React.memo(function TypingIndicator({
+  dots,
+  lunaProfile,
+}: {
+  dots: Animated.Value[];
+  lunaProfile: LunaProfile;
+}) {
+  return (
+    <View style={styles.typingContainer}>
+      <View style={styles.avatarWrap}>
+        <AvatarPreview profile={lunaProfile} size={28} />
+      </View>
+      <View style={styles.typingBubble}>
+        <View style={styles.typingDots}>
+          {dots.map((dot, i) => (
+            <Animated.View
+              key={i}
+              style={[styles.dot, { transform: [{ translateY: dot }] }]}
+            />
+          ))}
+        </View>
+      </View>
+    </View>
+  );
+});
+
+interface MessageItemProps {
+  item: DisplayMessage;
+  isActiveMatch: boolean;
+  searchQuery: string;
+  lunaProfile: LunaProfile;
+  onImagePress: (uri: string) => void;
+}
+
+const MessageItem = React.memo(
+  function MessageItem({ item, isActiveMatch, searchQuery, lunaProfile, onImagePress }: MessageItemProps) {
+    const isUser = item.role === "user";
+    const hasImage = !!item.imageUri;
+    const displayContent =
+      isUser &&
+      (item.content.startsWith("[User sent an image") ||
+        item.content.startsWith("[Image received"))
+        ? ""
+        : item.content;
+
+    const textStyle = [
+      styles.messageText,
+      isUser ? styles.userMessageText : styles.assistantMessageText,
+    ];
+
+    let content: React.ReactNode = null;
+    if (displayContent.length > 0) {
+      const query = searchQuery.trim();
+      if (!query) {
+        content = <Text style={textStyle}>{displayContent}</Text>;
+      } else {
+        const parts = displayContent.split(new RegExp(`(${query})`, "gi"));
+        content = (
+          <Text style={textStyle}>
+            {parts.map((part, i) =>
+              part.toLowerCase() === query.toLowerCase() ? (
+                <Text
+                  key={i}
+                  style={[
+                    styles.searchHighlight,
+                    isActiveMatch && styles.searchHighlightActive,
+                  ]}
+                >
+                  {part}
+                </Text>
+              ) : (
+                part
+              ),
+            )}
+          </Text>
+        );
+      }
+    }
+
+    return (
+      <AnimatedBubble itemId={item.id} isUser={isUser}>
+        {!isUser && (
+          <View style={styles.avatarWrap}>
+            <AvatarPreview profile={lunaProfile} size={28} />
+          </View>
+        )}
+        <View
+          style={[
+            styles.messageBubble,
+            isUser ? styles.userBubble : styles.assistantBubble,
+            hasImage && styles.imageBubble,
+          ]}
+        >
+          {hasImage && item.imageUri && (
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={() => onImagePress(item.imageUri!)}
+            >
+              <Image
+                source={{ uri: item.imageUri }}
+                style={styles.messageImage}
+                resizeMode="cover"
+              />
+            </TouchableOpacity>
+          )}
+          {content && (
+            <View style={hasImage ? styles.imageCaption : undefined}>
+              {content}
+            </View>
+          )}
+        </View>
+      </AnimatedBubble>
+    );
+  },
+);
 
 export const ChatScreen = () => {
   const [input, setInput] = useState("");
@@ -153,22 +294,39 @@ export const ChatScreen = () => {
   });
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [showImageSheet, setShowImageSheet] = useState(false);
+  const [viewerImageUri, setViewerImageUri] = useState<string | null>(null);
+  const [pendingImageUri, setPendingImageUri] = useState<string | null>(null);
 
   const flatListRef = useRef<FlatList>(null);
+  const inputRef = useRef<TextInput>(null);
   const isMountedRef = useRef(true);
   const insets = useSafeAreaInsets();
   const menuTop = insets.top + 62;
 
-  // Android: adjustNothing mode — track keyboard height with plain state
-  const [kbHeight, setKbHeight] = useState(0);
+  // Android: adjustNothing mode — drive an Animated.Value so the input bar
+  // rides smoothly with the keyboard's slide instead of snapping after didShow.
+  const kbAnim = useRef(new Animated.Value(0)).current;
+  const lastKbHeight = useRef(0);
   useEffect(() => {
     if (Platform.OS !== "android") return;
     const show = Keyboard.addListener("keyboardDidShow", (e) => {
-      setKbHeight(e.endCoordinates.height);
+      const h = e.endCoordinates.height;
+      lastKbHeight.current = h;
+      Animated.timing(kbAnim, {
+        toValue: h,
+        duration: 220,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: false,
+      }).start();
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
     });
     const hide = Keyboard.addListener("keyboardDidHide", () => {
-      setKbHeight(0);
+      Animated.timing(kbAnim, {
+        toValue: 0,
+        duration: 260,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: false,
+      }).start();
     });
     return () => { show.remove(); hide.remove(); };
   }, []);
@@ -261,7 +419,24 @@ export const ChatScreen = () => {
   useEffect(() => {
     const init = async () => {
       // load user profile first
-      const profile = await loadUserProfile();
+      let profile = await loadUserProfile();
+
+      // 18+ enforcement at boot — Luna is unfiltered, no underage users.
+      // Catches existing profiles where age was lowered before the Settings
+      // gate landed, and any other path that might've left an under-18 age
+      // in storage. Wipe the profile and force back through onboarding
+      // (which has its own >=18 gate).
+      if (profile?.hasCompletedOnboarding && profile.userAge && profile.userAge < 18) {
+        console.warn('[AgeGate] under-18 profile detected, clearing and re-onboarding');
+        await clearUserProfile();
+        profile = await loadUserProfile();
+        showAlert({
+          title: 'Age Restricted',
+          message: 'You must be 18 or older to use Luna. Please set up again.',
+          icon: 'warning',
+        });
+      }
+
       setUserProfile(profile);
 
       // initialize chat with personalized prompt if profile exists
@@ -449,7 +624,13 @@ export const ChatScreen = () => {
   };
 
   const sendMessage = async () => {
-    if (!input.trim() || isLoading) return;
+    if (isLoading) return;
+    // if there's a staged photo, send it (with whatever's in the input as the caption)
+    if (pendingImageUri) {
+      await sendImageMessage(pendingImageUri);
+      return;
+    }
+    if (!input.trim()) return;
 
     const userText = input.trim();
     setInput("");
@@ -609,7 +790,7 @@ export const ChatScreen = () => {
     });
 
     if (!result.canceled && result.assets[0]) {
-      await sendImageMessage(result.assets[0].uri);
+      stageImageForCaption(result.assets[0].uri);
     }
   };
 
@@ -630,15 +811,27 @@ export const ChatScreen = () => {
     });
 
     if (!result.canceled && result.assets[0]) {
-      await sendImageMessage(result.assets[0].uri);
+      stageImageForCaption(result.assets[0].uri);
     }
+  };
+
+  // stage a picked photo into the composer so the user can type an optional
+  // caption before sending. focus the input + open keyboard so they can
+  // start typing immediately, but don't auto-send.
+  const stageImageForCaption = (uri: string) => {
+    setPendingImageUri(uri);
+    setShowEmojiPicker(false);
+    setTimeout(() => inputRef.current?.focus(), 80);
   };
 
   // send image message
   const sendImageMessage = async (imageUri: string) => {
     Keyboard.dismiss();
 
-    // add user message with image
+    // clear staging state immediately so the preview disappears
+    setPendingImageUri(null);
+
+    // add user message with image (caption is whatever's currently in the input)
     const userMessage: DisplayMessage = {
       id: `user-img-${Date.now()}`,
       role: "user",
@@ -694,11 +887,11 @@ export const ChatScreen = () => {
   };
 
   // compute search matches
-  const searchResults = searchQuery.trim()
-    ? messages.filter((m) =>
-        m.content.toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    : [];
+  const searchResults = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return [];
+    return messages.filter((m) => m.content.toLowerCase().includes(q));
+  }, [searchQuery, messages]);
   const clampedIndex = searchResults.length > 0
     ? Math.min(searchIndex, searchResults.length - 1)
     : 0;
@@ -706,83 +899,83 @@ export const ChatScreen = () => {
   // render message bubble - instagram style
   const activeMatchId = searchResults[clampedIndex]?.id;
 
-  const renderMessage = ({ item }: { item: DisplayMessage }) => {
-    const isUser = item.role === "user";
-    const hasImage = !!item.imageUri;
-    // strip any instruction text that leaked into stored history from older versions
-    const displayContent =
-      isUser && (
-        item.content.startsWith("[User sent an image") ||
-        item.content.startsWith("[Image received")
-      )
-        ? ""
-        : item.content;
+  const handleImagePress = useCallback((uri: string) => {
+    setViewerImageUri(uri);
+  }, []);
 
-    const isActiveMatch = item.id === activeMatchId;
-    const textStyle = [
-      styles.messageText,
-      isUser ? styles.userMessageText : styles.assistantMessageText,
-    ];
+  const handleEmojiSelect = useCallback((emoji: string) => {
+    setInput((prev) => prev + emoji);
+  }, []);
 
-    // render with highlighted search matches
-    const renderContent = () => {
-      if (!searchQuery.trim() || displayContent.length === 0) {
-        return <Text style={textStyle}>{displayContent}</Text>;
-      }
-      const query = searchQuery.trim();
-      const parts = displayContent.split(new RegExp(`(${query})`, "gi"));
-      return (
-        <Text style={textStyle}>
-          {parts.map((part, i) => {
-            const isMatch = part.toLowerCase() === query.toLowerCase();
-            if (!isMatch) return part;
-            return (
-              <Text
-                key={i}
-                style={[
-                  styles.searchHighlight,
-                  isActiveMatch && styles.searchHighlightActive,
-                ]}
-              >
-                {part}
-              </Text>
-            );
-          })}
-        </Text>
-      );
-    };
+  // Coalesce streaming size-change events into one scroll per frame. Animated
+  // scrolls during streaming pile up (each new chunk interrupts the prior
+  // animation) — instant scroll + RAF throttle gives a smooth follow-the-tail.
+  // Critically: only fire when the user is already at the bottom. If they've
+  // scrolled up to read history, virtualization-driven size changes must NOT
+  // yank them back down (that's the "cannot scroll up" bug).
+  const scrollPendingRef = useRef(false);
+  const isAtBottomRef = useRef(true);
+  const [scrollDownVisible, setScrollDownVisible] = useState(false);
+  const scrollDownOpacity = useRef(new Animated.Value(0)).current;
 
-    return (
-      <AnimatedBubble isUser={isUser}>
-        {!isUser && (
-          <Image
-            source={require("../../assets/icon.png")}
-            style={styles.avatar}
-          />
-        )}
-        <View
-          style={[
-            styles.messageBubble,
-            isUser ? styles.userBubble : styles.assistantBubble,
-            hasImage && styles.imageBubble,
-          ]}
-        >
-          {hasImage && (
-            <Image
-              source={{ uri: item.imageUri }}
-              style={styles.messageImage}
-              resizeMode="cover"
-            />
-          )}
-          {displayContent.length > 0 && (
-            <View style={hasImage ? styles.imageCaption : undefined}>
-              {renderContent()}
-            </View>
-          )}
-        </View>
-      </AnimatedBubble>
-    );
-  };
+  const handleScroll = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
+      const distanceFromBottom =
+        contentSize.height - (contentOffset.y + layoutMeasurement.height);
+      isAtBottomRef.current = distanceFromBottom < 80;
+      // only show the floating jump-to-bottom button after the user has
+      // scrolled meaningfully up — avoids flicker on tiny rubber-band bounces.
+      const shouldShow = distanceFromBottom > 240;
+      setScrollDownVisible((prev) => (prev !== shouldShow ? shouldShow : prev));
+    },
+    [],
+  );
+
+  // hide the pill in any state where the user is actively composing
+  // (recording, emoji picker open, photo staged for caption) — those UI
+  // states either own the bottom area or mean "scroll-to-bottom" isn't
+  // what the user wants right now.
+  const scrollDownShouldDisplay =
+    scrollDownVisible && !showEmojiPicker && !isRecording && !pendingImageUri;
+
+  // fade the scroll-down pill in/out when its visibility flips
+  useEffect(() => {
+    Animated.timing(scrollDownOpacity, {
+      toValue: scrollDownShouldDisplay ? 1 : 0,
+      duration: 180,
+      useNativeDriver: true,
+    }).start();
+  }, [scrollDownShouldDisplay]);
+
+  const scrollToBottom = useCallback(() => {
+    flatListRef.current?.scrollToEnd({ animated: true });
+    isAtBottomRef.current = true;
+    setScrollDownVisible(false);
+  }, []);
+
+  const handleListContentSizeChange = useCallback(() => {
+    if (!isAtBottomRef.current) return;
+    if (scrollPendingRef.current) return;
+    scrollPendingRef.current = true;
+    requestAnimationFrame(() => {
+      scrollPendingRef.current = false;
+      flatListRef.current?.scrollToEnd({ animated: false });
+    });
+  }, []);
+
+  const renderMessage = useCallback(
+    ({ item }: { item: DisplayMessage }) => (
+      <MessageItem
+        item={item}
+        isActiveMatch={item.id === activeMatchId}
+        searchQuery={searchQuery}
+        lunaProfile={lunaProfile}
+        onImagePress={handleImagePress}
+      />
+    ),
+    [activeMatchId, searchQuery, lunaProfile, handleImagePress],
+  );
 
   // onboarding screen
   if (showOnboarding) {
@@ -892,8 +1085,8 @@ export const ChatScreen = () => {
       )}
 
 
-      <KeyboardAvoidingView
-        style={[styles.keyboardAvoid, Platform.OS === "android" && kbHeight > 0 && { marginBottom: kbHeight }]}
+      <AnimatedKAV
+        style={[styles.keyboardAvoid, Platform.OS === "android" && { marginBottom: kbAnim }]}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         {/* message list */}
@@ -901,41 +1094,77 @@ export const ChatScreen = () => {
           ref={flatListRef}
           data={messages}
           renderItem={renderMessage}
-          keyExtractor={(item) => item.id}
+          keyExtractor={messageKeyExtractor}
           style={styles.messageList}
           contentContainerStyle={styles.messageListContent}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
-          onContentSizeChange={() => {
-            flatListRef.current?.scrollToEnd({ animated: true });
-          }}
-          ListEmptyComponent={
-            <View style={styles.emptyContainer}>
-              <Text style={styles.emptyText}>Start chatting with Luna!</Text>
-            </View>
-          }
+          initialNumToRender={15}
+          maxToRenderPerBatch={10}
+          windowSize={7}
+          removeClippedSubviews
+          updateCellsBatchingPeriod={50}
+          onScroll={handleScroll}
+          scrollEventThrottle={16}
+          onContentSizeChange={handleListContentSizeChange}
+          ListEmptyComponent={EmptyList}
           ListFooterComponent={
             isTyping ? (
-              <View style={styles.typingContainer}>
-                <Image
-                  source={require("../../assets/icon.png")}
-                  style={styles.avatar}
-                />
-                <View style={styles.typingBubble}>
-                  <View style={styles.typingDots}>
-                    {[dot1, dot2, dot3].map((dot, i) => (
-                      <Animated.View key={i} style={[styles.dot, { transform: [{ translateY: dot }] }]} />
-                    ))}
-                  </View>
-                </View>
-              </View>
+              <TypingIndicator dots={[dot1, dot2, dot3]} lunaProfile={lunaProfile} />
             ) : null
           }
         />
 
+        {/* floating "jump to latest" pill — appears when scrolled up,
+            taps scroll back to the most recent message (WhatsApp pattern) */}
+        <Animated.View
+          pointerEvents={scrollDownShouldDisplay ? "box-none" : "none"}
+          style={[
+            styles.scrollDownBtnWrap,
+            { opacity: scrollDownOpacity, bottom: 88 + insets.bottom },
+          ]}
+        >
+          <TouchableOpacity
+            onPress={scrollToBottom}
+            style={styles.scrollDownBtn}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="chevron-down" size={22} color="rgba(255,255,255,0.9)" />
+          </TouchableOpacity>
+        </Animated.View>
+
         {/* input section */}
-        <View style={[styles.inputContainer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+        <View
+          style={[
+            styles.inputContainer,
+            {
+              paddingBottom: showEmojiPicker ? 6 : Math.max(insets.bottom, 12),
+            },
+          ]}
+        >
+          {/* staged photo preview (shown above the input row before send) */}
+          {pendingImageUri && !isRecording && (
+            <View style={styles.imagePreviewRow}>
+              <View style={styles.imagePreviewWrap}>
+                <Image
+                  source={{ uri: pendingImageUri }}
+                  style={styles.imagePreviewThumb}
+                />
+                <TouchableOpacity
+                  onPress={() => setPendingImageUri(null)}
+                  style={styles.imagePreviewClose}
+                  hitSlop={8}
+                >
+                  <Ionicons name="close" size={16} color="#fff" />
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.imagePreviewHint} numberOfLines={1}>
+                Photo attached — add a caption below
+              </Text>
+            </View>
+          )}
+
           {isRecording ? (
             /* recording bar */
             <View style={styles.recordingBar}>
@@ -975,8 +1204,34 @@ export const ChatScreen = () => {
               <TouchableOpacity
                 style={styles.inputIconBtn}
                 onPress={() => {
-                  if (showEmojiPicker) { setShowEmojiPicker(false); }
-                  else { Keyboard.dismiss(); setShowEmojiPicker(true); }
+                  if (showEmojiPicker) {
+                    // closing picker → opening keyboard. Match the picker's
+                    // close timing exactly (220ms cubic-in) so the inputContainer
+                    // rises in lock-step as the picker collapses — no kick.
+                    if (Platform.OS === "android" && lastKbHeight.current > 0) {
+                      Animated.timing(kbAnim, {
+                        toValue: lastKbHeight.current,
+                        duration: 220,
+                        easing: Easing.in(Easing.cubic),
+                        useNativeDriver: false,
+                      }).start();
+                    }
+                    inputRef.current?.focus();
+                  } else {
+                    // closing keyboard → opening picker. Match the picker's
+                    // open timing exactly (260ms cubic-out) so KAV margin
+                    // shrinks at the same rate as the picker grows.
+                    if (Platform.OS === "android") {
+                      Animated.timing(kbAnim, {
+                        toValue: 0,
+                        duration: 260,
+                        easing: Easing.out(Easing.cubic),
+                        useNativeDriver: false,
+                      }).start();
+                    }
+                    Keyboard.dismiss();
+                    setShowEmojiPicker(true);
+                  }
                 }}
                 disabled={isLoading}
               >
@@ -990,6 +1245,7 @@ export const ChatScreen = () => {
               {/* text input pill */}
               <View style={styles.inputPill}>
                 <TextInput
+                  ref={inputRef}
                   value={input}
                   onChangeText={setInput}
                   onFocus={() => setShowEmojiPicker(false)}
@@ -1007,8 +1263,9 @@ export const ChatScreen = () => {
                 </View>
               </View>
 
-              {/* right action: send OR mic OR transcribing spinner */}
-              {input.trim() ? (
+              {/* right action: send OR mic OR transcribing spinner.
+                  staged photo → send (even with empty caption) */}
+              {input.trim() || pendingImageUri ? (
                 <TouchableOpacity style={styles.sendBtn} onPress={sendMessage} disabled={isLoading}>
                   <Ionicons name="send" size={19} color="#fff" />
                 </TouchableOpacity>
@@ -1024,14 +1281,13 @@ export const ChatScreen = () => {
             </View>
           )}
         </View>
-      </KeyboardAvoidingView>
 
-      {/* emoji picker sheet */}
-      <EmojiPicker
-        visible={showEmojiPicker}
-        onClose={() => setShowEmojiPicker(false)}
-        onSelect={(emoji) => setInput((prev) => prev + emoji)}
-      />
+        {/* inline emoji drawer — sits where the keyboard would, input stays visible */}
+        <EmojiPicker
+          visible={showEmojiPicker}
+          onSelect={handleEmojiSelect}
+        />
+      </AnimatedKAV>
 
       {/* settings screen overlay */}
       {showSettings && (
@@ -1089,6 +1345,12 @@ export const ChatScreen = () => {
         onCamera={takePhoto}
         onGallery={pickImage}
         onClose={() => setShowImageSheet(false)}
+      />
+
+      {/* fullscreen image preview when tapping a chat photo */}
+      <ImageViewerModal
+        uri={viewerImageUri}
+        onClose={() => setViewerImageUri(null)}
       />
 
       {/* global custom alert — replaces system Alert.alert */}
@@ -1203,6 +1465,9 @@ const styles = StyleSheet.create({
     marginRight: 8,
     backgroundColor: "#262626",
   },
+  avatarWrap: {
+    marginRight: 8,
+  },
   // message bubbles - instagram style
   messageBubble: {
     maxWidth: "85%",
@@ -1286,6 +1551,60 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.6)",
     borderTopWidth: 0.5,
     borderTopColor: "rgba(255, 255, 255, 0.1)",
+  },
+  scrollDownBtnWrap: {
+    position: "absolute",
+    right: 12,
+    zIndex: 5,
+  },
+  scrollDownBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "rgba(28,28,30,0.9)",
+    borderWidth: 0.5,
+    borderColor: "rgba(255,255,255,0.08)",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  imagePreviewRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 4,
+    paddingBottom: 8,
+  },
+  imagePreviewWrap: {
+    width: 56,
+    height: 56,
+    borderRadius: 10,
+    overflow: "hidden",
+    backgroundColor: "#1c1c1e",
+  },
+  imagePreviewThumb: {
+    width: "100%",
+    height: "100%",
+  },
+  imagePreviewClose: {
+    position: "absolute",
+    top: 2,
+    right: 2,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: "rgba(0,0,0,0.7)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  imagePreviewHint: {
+    flex: 1,
+    color: "rgba(255,255,255,0.5)",
+    fontSize: 13,
   },
   inputRow: {
     flexDirection: "row",
