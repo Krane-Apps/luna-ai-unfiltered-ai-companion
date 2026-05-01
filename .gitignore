@@ -64,3 +64,5 @@ builds/
 
 # firebase config (contains API keys)
 google-services.json
+.claude/
+worker/.wrangler/

@@ -1,6 +1,6 @@
 // chat screen with chatgpt-style message interface
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
   View,
   TextInput,
@@ -11,17 +11,28 @@ import {
   Platform,
   StatusBar,
   FlatList,
-  KeyboardAvoidingView,
-  Alert,
+  Animated,
   Image,
   Linking,
+  Pressable,
+  ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
+import * as Haptics from "expo-haptics";
+import { Audio } from "expo-av";
 import { Ionicons } from "@expo/vector-icons";
+import { EmojiPicker } from "../components/EmojiPicker";
+import { HeaderMenu } from "../components/HeaderMenu";
+import { SearchBar } from "../components/SearchBar";
+import { ThemePicker, ThemeBackground, ChatTheme, THEMES } from "../components/ThemePicker";
+import { LunaProfileModal, AvatarPreview, LunaProfile } from "../components/LunaProfileModal";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { showAlert, AlertProvider } from "../components/AppAlert";
+import { ImageSourceSheet } from "../components/ImageSourceSheet";
+import { startRecording, stopRecording, transcribeAudio } from "../services/voice";
+import { setNotificationsMuted } from "../services/notifications";
 import { PaymentModal } from "../components/PaymentModal";
-import { SessionTimer } from "../components/SessionTimer";
-import { TwitterShareBanner } from "../components/TwitterShareBanner";
 import { RefundBottomSheet } from "../components/RefundBottomSheet";
 import { OnboardingScreen } from "./OnboardingScreen";
 import { SettingsScreen } from "./SettingsScreen";
@@ -41,6 +52,7 @@ import {
   loadSessionFromStorage,
   connectWallet,
 } from "../services/payment";
+import { DEV_MODE } from "../constants/config";
 import {
   loadUserProfile,
   getUserProfile,
@@ -61,6 +73,52 @@ interface DisplayMessage {
   imageUri?: string;
 }
 
+const AnimatedBubble = ({
+  isUser,
+  children,
+}: {
+  isUser: boolean;
+  children: React.ReactNode;
+}) => {
+  const translateX = useRef(new Animated.Value(isUser ? 60 : -60)).current;
+  const opacity = useRef(new Animated.Value(0)).current;
+  const scale = useRef(new Animated.Value(0.85)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(opacity, {
+        toValue: 1,
+        duration: 220,
+        useNativeDriver: true,
+      }),
+      Animated.spring(translateX, {
+        toValue: 0,
+        tension: 180,
+        friction: 18,
+        useNativeDriver: true,
+      }),
+      Animated.spring(scale, {
+        toValue: 1,
+        tension: 200,
+        friction: 18,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, []);
+
+  return (
+    <Animated.View
+      style={[
+        styles.messageRow,
+        isUser ? styles.messageRowUser : styles.messageRowAssistant,
+        { opacity, transform: [{ translateX }, { scale }] },
+      ]}
+    >
+      {children}
+    </Animated.View>
+  );
+};
+
 export const ChatScreen = () => {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -75,18 +133,136 @@ export const ChatScreen = () => {
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [isTyping, setIsTyping] = useState(false);
   const [isRestoringSubscription, setIsRestoringSubscription] = useState(false);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchIndex, setSearchIndex] = useState(0);
+  const [showThemePicker, setShowThemePicker] = useState(false);
+  const [chatTheme, setChatTheme] = useState<ChatTheme>(THEMES[0]);
+  const [lunaProfile, setLunaProfile] = useState<LunaProfile>({
+    name: "Luna",
+    avatarUri: null,
+    presetIndex: null,
+  });
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [showImageSheet, setShowImageSheet] = useState(false);
 
   const flatListRef = useRef<FlatList>(null);
   const isMountedRef = useRef(true);
   const insets = useSafeAreaInsets();
+  const menuTop = insets.top + 62;
+  const androidKbHeight = useRef(new Animated.Value(0)).current;
+  const [kbOpen, setKbOpen] = useState(false);
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    const show = Keyboard.addListener("keyboardDidShow", (e) => {
+      setKbOpen(true);
+      Animated.timing(androidKbHeight, {
+        toValue: e.endCoordinates.height,
+        duration: 0,
+        useNativeDriver: false,
+      }).start();
+    });
+    const hide = Keyboard.addListener("keyboardDidHide", () => {
+      setKbOpen(false);
+      Animated.timing(androidKbHeight, {
+        toValue: 0,
+        duration: 0,
+        useNativeDriver: false,
+      }).start();
+    });
+    return () => { show.remove(); hide.remove(); };
+  }, []);
+
+  // animated typing dots in header (3 dots bounce sequentially)
+  const dot1 = useRef(new Animated.Value(0)).current;
+  const dot2 = useRef(new Animated.Value(0)).current;
+  const dot3 = useRef(new Animated.Value(0)).current;
+  const typingAnim = useRef<Animated.CompositeAnimation | null>(null);
+
+  useEffect(() => {
+    if (isTyping) {
+      const bounce = (dot: Animated.Value, delay: number) =>
+        Animated.loop(
+          Animated.sequence([
+            Animated.delay(delay),
+            Animated.timing(dot, { toValue: -4, duration: 300, useNativeDriver: true }),
+            Animated.timing(dot, { toValue: 0, duration: 300, useNativeDriver: true }),
+            Animated.delay(600 - delay),
+          ])
+        );
+      typingAnim.current = Animated.parallel([
+        bounce(dot1, 0),
+        bounce(dot2, 150),
+        bounce(dot3, 300),
+      ]);
+      typingAnim.current.start();
+    } else {
+      typingAnim.current?.stop();
+      dot1.setValue(0); dot2.setValue(0); dot3.setValue(0);
+    }
+  }, [isTyping]);
+
+  // play a subtle UI sound
+  const playSound = useCallback(async (type: "send" | "receive") => {
+    try {
+      const { sound } = await Audio.Sound.createAsync(
+        type === "send"
+          ? require("../../assets/sounds/send.mp3")
+          : require("../../assets/sounds/receive.mp3"),
+        { volume: 0.4 }
+      );
+      await sound.playAsync();
+      sound.setOnPlaybackStatusUpdate((s) => {
+        if (s.isLoaded && s.didJustFinish) sound.unloadAsync();
+      });
+    } catch {}
+  }, []);
 
   // track mounted state for cleanup
   useEffect(() => {
     isMountedRef.current = true;
-    return () => {
-      isMountedRef.current = false;
-    };
+    return () => { isMountedRef.current = false; };
   }, []);
+
+
+  useEffect(() => {
+    setNotificationsMuted(isMuted);
+  }, [isMuted]);
+
+  // persist luna profile
+  useEffect(() => {
+    AsyncStorage.setItem("luna_profile", JSON.stringify(lunaProfile)).catch(() => {});
+  }, [lunaProfile]);
+
+  // load luna profile on mount
+  useEffect(() => {
+    AsyncStorage.getItem("luna_profile").then(raw => {
+      if (raw) {
+        try { setLunaProfile(JSON.parse(raw)); } catch {}
+      }
+    }).catch(() => {});
+  }, []);
+
+  const pickLunaAvatarFromGallery = async (onResult: (uri: string) => void) => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") return;
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: false,
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets[0]) {
+      const uri = result.assets[0].uri;
+      onResult(uri);
+      setLunaProfile(p => ({ ...p, avatarUri: uri, presetIndex: null }));
+    }
+  };
 
   useEffect(() => {
     const init = async () => {
@@ -133,6 +309,11 @@ export const ChatScreen = () => {
   }, []);
 
   const checkSession = () => {
+    if (DEV_MODE) {
+      setHasActiveSession(true);
+      setShowPayment(false);
+      return;
+    }
     const session = getSessionState();
     setHasActiveSession(session.isActive);
     setShowPayment(!session.isActive);
@@ -177,7 +358,7 @@ export const ChatScreen = () => {
   };
 
   const handleSessionExpired = useCallback(async () => {
-    if (hasLifetimeAccess()) return;
+    if (DEV_MODE || hasLifetimeAccess()) return;
 
     endSession();
     setHasActiveSession(false);
@@ -194,7 +375,7 @@ export const ChatScreen = () => {
 
     // note: backend will be initialized after payment with wallet address
 
-    if (profile?.hasLifetimeAccess) {
+    if (DEV_MODE || profile?.hasLifetimeAccess) {
       setShowPayment(false);
       setHasActiveSession(true);
       startConversation();
@@ -208,6 +389,25 @@ export const ChatScreen = () => {
         setShowPayment(true);
       }
     }
+  };
+
+  const handleVoicePressIn = async () => {
+    const started = await startRecording();
+    if (started) setIsRecording(true);
+    else showAlert({ title: "Permission Required", message: "Microphone access is needed to record voice messages.", icon: "warning" });
+  };
+
+  const handleVoicePressOut = async () => {
+    if (!isRecording) return;
+    setIsRecording(false);
+    setIsTranscribing(true);
+    const uri = await stopRecording();
+    if (uri) {
+      const text = await transcribeAudio(uri);
+      if (text) setInput((prev) => (prev ? prev + " " + text : text));
+      else showAlert({ title: "Could not transcribe", message: "Please try again.", icon: "error" });
+    }
+    setIsTranscribing(false);
   };
 
   const sendMessage = async () => {
@@ -226,6 +426,10 @@ export const ChatScreen = () => {
     };
     setMessages((prev) => [...prev, userMessage]);
 
+    // haptic + sound on send
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    playSound("send");
+
     // scroll to bottom
     setTimeout(() => {
       flatListRef.current?.scrollToEnd({ animated: true });
@@ -242,6 +446,10 @@ export const ChatScreen = () => {
 
     setIsLoading(false);
     setIsTyping(false);
+
+    // haptic + sound on reply received
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    playSound("receive");
 
     // add assistant message
     const assistantMessage: DisplayMessage = {
@@ -296,10 +504,7 @@ export const ChatScreen = () => {
 
     if (!walletResult.success || !walletResult.walletAddress) {
       setIsRestoringSubscription(false);
-      Alert.alert(
-        "Wallet Connection Failed",
-        walletResult.error || "Could not connect to wallet",
-      );
+      showAlert({ title: "Wallet Connection Failed", message: walletResult.error || "Could not connect to wallet.", icon: "error" });
       return;
     }
 
@@ -327,29 +532,24 @@ export const ChatScreen = () => {
         );
         setMessages(displayMessages);
         console.log("[Chat] restored", displayMessages.length, "messages");
-        Alert.alert(
-          "Success",
-          `Restored ${displayMessages.length} messages from your previous conversations!`,
-        );
+        showAlert({ title: "Restored!", message: `${displayMessages.length} messages from your previous conversations have been restored.`, icon: "success" });
       } else {
-        Alert.alert("Success", "Your subscription has been restored!");
+        showAlert({ title: "Subscription Restored!", message: "You now have full access to Luna.", icon: "success" });
         startConversation();
       }
 
       setShowPayment(false);
       setHasActiveSession(true);
     } else {
-      Alert.alert(
-        "No Subscription Found",
-        "We could not find an active subscription for this wallet. Please contact support if you believe this is an error.",
-        [
-          {
-            text: "Contact Support",
-            onPress: () => Linking.openURL("https://t.me/lunaaiseeker"),
-          },
-          { text: "OK" },
+      showAlert({
+        title: "No Subscription Found",
+        message: "We could not find an active subscription for this wallet. Please contact support if you believe this is an error.",
+        icon: "info",
+        buttons: [
+          { text: "Contact Support", onPress: () => Linking.openURL("https://t.me/lunaaiseeker") },
+          { text: "OK", style: "cancel" },
         ],
-      );
+      });
     }
   };
 
@@ -359,17 +559,14 @@ export const ChatScreen = () => {
 
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== "granted") {
-      Alert.alert(
-        "Permission needed",
-        "Please allow access to your photos to send images.",
-      );
+      showAlert({ title: "Permission Needed", message: "Please allow access to your photos to send images.", icon: "warning" });
       return;
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
-      allowsEditing: true,
-      quality: 0.7,
+      allowsEditing: false,
+      quality: 0.8,
       base64: false,
     });
 
@@ -384,16 +581,13 @@ export const ChatScreen = () => {
 
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== "granted") {
-      Alert.alert(
-        "Permission needed",
-        "Please allow camera access to take photos.",
-      );
+      showAlert({ title: "Permission Needed", message: "Please allow camera access to take photos.", icon: "warning" });
       return;
     }
 
     const result = await ImagePicker.launchCameraAsync({
-      allowsEditing: true,
-      quality: 0.7,
+      allowsEditing: false,
+      quality: 0.8,
       base64: false,
     });
 
@@ -418,6 +612,10 @@ export const ChatScreen = () => {
     const userText = input.trim();
     setInput("");
 
+    // haptic + sound on send
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    playSound("send");
+
     // scroll to bottom
     setTimeout(() => {
       flatListRef.current?.scrollToEnd({ animated: true });
@@ -438,6 +636,10 @@ export const ChatScreen = () => {
     setIsLoading(false);
     setIsTyping(false);
 
+    // haptic + sound on reply received
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    playSound("receive");
+
     // add assistant message
     const assistantMessage: DisplayMessage = {
       id: `assistant-${Date.now()}`,
@@ -453,23 +655,64 @@ export const ChatScreen = () => {
     }, 100);
   };
 
+  // compute search matches
+  const searchResults = searchQuery.trim()
+    ? messages.filter((m) =>
+        m.content.toLowerCase().includes(searchQuery.toLowerCase())
+      )
+    : [];
+  const clampedIndex = searchResults.length > 0
+    ? Math.min(searchIndex, searchResults.length - 1)
+    : 0;
+
   // render message bubble - instagram style
+  const activeMatchId = searchResults[clampedIndex]?.id;
+
   const renderMessage = ({ item }: { item: DisplayMessage }) => {
     const isUser = item.role === "user";
     const hasImage = !!item.imageUri;
-    // hide the image analysis text from user messages
     const displayContent =
       isUser && item.content.startsWith("[User sent an image")
         ? ""
         : item.content;
 
+    const isActiveMatch = item.id === activeMatchId;
+    const textStyle = [
+      styles.messageText,
+      isUser ? styles.userMessageText : styles.assistantMessageText,
+      hasImage && styles.imageCaption,
+    ];
+
+    // render with highlighted search matches
+    const renderContent = () => {
+      if (!searchQuery.trim() || displayContent.length === 0) {
+        return <Text style={textStyle}>{displayContent}</Text>;
+      }
+      const query = searchQuery.trim();
+      const parts = displayContent.split(new RegExp(`(${query})`, "gi"));
+      return (
+        <Text style={textStyle}>
+          {parts.map((part, i) => {
+            const isMatch = part.toLowerCase() === query.toLowerCase();
+            if (!isMatch) return part;
+            return (
+              <Text
+                key={i}
+                style={[
+                  styles.searchHighlight,
+                  isActiveMatch && styles.searchHighlightActive,
+                ]}
+              >
+                {part}
+              </Text>
+            );
+          })}
+        </Text>
+      );
+    };
+
     return (
-      <View
-        style={[
-          styles.messageRow,
-          isUser ? styles.messageRowUser : styles.messageRowAssistant,
-        ]}
-      >
+      <AnimatedBubble isUser={isUser}>
         {!isUser && (
           <Image
             source={require("../../assets/icon.png")}
@@ -490,19 +733,9 @@ export const ChatScreen = () => {
               resizeMode="cover"
             />
           )}
-          {displayContent.length > 0 && (
-            <Text
-              style={[
-                styles.messageText,
-                isUser ? styles.userMessageText : styles.assistantMessageText,
-                hasImage && styles.imageCaption,
-              ]}
-            >
-              {displayContent}
-            </Text>
-          )}
+          {displayContent.length > 0 && renderContent()}
         </View>
-      </View>
+      </AnimatedBubble>
     );
   };
 
@@ -546,50 +779,75 @@ export const ChatScreen = () => {
     );
   }
 
-  return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
-      <StatusBar barStyle="light-content" backgroundColor="#000" />
+  const handleSearchNext = () => {
+    if (searchResults.length === 0) return;
+    const next = (clampedIndex + 1) % searchResults.length;
+    setSearchIndex(next);
+    const msgIndex = messages.findIndex((m) => m.id === searchResults[next].id);
+    if (msgIndex !== -1) flatListRef.current?.scrollToIndex({ index: msgIndex, animated: true });
+  };
 
-      {/* header - instagram style (outside KeyboardAvoidingView) */}
+  const handleSearchPrev = () => {
+    if (searchResults.length === 0) return;
+    const prev = (clampedIndex - 1 + searchResults.length) % searchResults.length;
+    setSearchIndex(prev);
+    const msgIndex = messages.findIndex((m) => m.id === searchResults[prev].id);
+    if (msgIndex !== -1) flatListRef.current?.scrollToIndex({ index: msgIndex, animated: true });
+  };
+
+  return (
+    <ThemeBackground theme={chatTheme} style={{ paddingTop: insets.top }}>
+      <StatusBar barStyle="light-content" backgroundColor={chatTheme.bg} />
+
+      {/* header */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Image
-            source={require("../../assets/icon.png")}
-            style={styles.headerAvatar}
-          />
-          <View>
-            <Text style={styles.headerTitle}>Luna</Text>
-            <Text style={styles.headerSubtitle}>
-              {isTyping ? "typing..." : "Active now"}
-            </Text>
-          </View>
+          <TouchableOpacity
+            onPress={() => setShowProfileModal(true)}
+            activeOpacity={0.7}
+            style={styles.headerLeftInner}
+          >
+            <AvatarPreview profile={lunaProfile} size={38} />
+            <View>
+              <Text style={styles.headerTitle}>{lunaProfile.name}</Text>
+              {isTyping ? (
+                <View style={styles.typingSubtitle}>
+                  <Text style={styles.headerSubtitle}>typing</Text>
+                  {[dot1, dot2, dot3].map((dot, i) => (
+                    <Animated.View key={i} style={[styles.typingDot, { transform: [{ translateY: dot }] }]} />
+                  ))}
+                </View>
+              ) : (
+                <Text style={styles.headerSubtitle}>Active now</Text>
+              )}
+            </View>
+          </TouchableOpacity>
         </View>
         <View style={styles.headerRight}>
-          {hasActiveSession && !hasLifetimeAccess() && (
-            <SessionTimer onSessionExpired={handleSessionExpired} />
-          )}
           <TouchableOpacity
             style={styles.headerIcon}
-            onPress={() => setShowSettings(true)}
+            onPress={() => setShowMenu(true)}
           >
-            <Ionicons name="settings-outline" size={24} color="#fff" />
+            <Ionicons name="ellipsis-vertical" size={22} color="#fff" />
           </TouchableOpacity>
         </View>
       </View>
 
-      {/* twitter share banner */}
-      {!hasLifetimeAccess() && (
-        <TwitterShareBanner
-          onLifetimeGranted={() => setHasActiveSession(true)}
+      {/* search bar — shown when search is active */}
+      {showSearch && (
+        <SearchBar
+          value={searchQuery}
+          onChange={(q) => { setSearchQuery(q); setSearchIndex(0); }}
+          resultCount={searchResults.length}
+          currentIndex={clampedIndex}
+          onPrev={handleSearchPrev}
+          onNext={handleSearchNext}
+          onClose={() => { setShowSearch(false); setSearchQuery(""); }}
         />
       )}
 
-      {/* keyboard avoiding view wraps only the chat content */}
-      <KeyboardAvoidingView
-        style={styles.keyboardAvoid}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={Platform.OS === "ios" ? insets.top + 60 : 20}
-      >
+
+      <Animated.View style={[styles.keyboardAvoid, { paddingBottom: Platform.OS === "android" ? androidKbHeight : 0 }]}>
         {/* message list */}
         <FlatList
           ref={flatListRef}
@@ -600,8 +858,7 @@ export const ChatScreen = () => {
           contentContainerStyle={styles.messageListContent}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="interactive"
-          automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
+          keyboardDismissMode="on-drag"
           onContentSizeChange={() => {
             flatListRef.current?.scrollToEnd({ animated: true });
           }}
@@ -619,9 +876,9 @@ export const ChatScreen = () => {
                 />
                 <View style={styles.typingBubble}>
                   <View style={styles.typingDots}>
-                    <View style={[styles.dot, styles.dot1]} />
-                    <View style={[styles.dot, styles.dot2]} />
-                    <View style={[styles.dot, styles.dot3]} />
+                    {[dot1, dot2, dot3].map((dot, i) => (
+                      <Animated.View key={i} style={[styles.dot, { transform: [{ translateY: dot }] }]} />
+                    ))}
                   </View>
                 </View>
               </View>
@@ -629,57 +886,78 @@ export const ChatScreen = () => {
           }
         />
 
-        {/* input section - instagram style */}
-        <View style={[styles.inputContainer, { paddingBottom: insets.bottom }]}>
-          <View style={styles.inputWrapper}>
+        {/* input section */}
+        <View style={[styles.inputContainer, { paddingBottom: kbOpen ? 8 : Math.max(insets.bottom, 12) }]}>
+          <View style={styles.inputRow}>
+            {/* emoji / keyboard toggle */}
             <TouchableOpacity
-              style={styles.inputIcon}
-              onPress={takePhoto}
+              style={styles.inputIconBtn}
+              onPress={() => {
+                if (showEmojiPicker) { setShowEmojiPicker(false); }
+                else { Keyboard.dismiss(); setShowEmojiPicker(true); }
+              }}
               disabled={isLoading}
             >
               <Ionicons
-                name="camera-outline"
-                size={24}
-                color={isLoading ? "#666" : "#fff"}
+                name={showEmojiPicker ? "keypad-outline" : "happy-outline"}
+                size={26}
+                color="rgba(255,255,255,0.6)"
               />
             </TouchableOpacity>
-            <TextInput
-              value={input}
-              onChangeText={setInput}
-              placeholder="Message..."
-              placeholderTextColor="rgba(255,255,255,0.5)"
-              style={styles.input}
-              multiline
-              maxLength={500}
-              editable={!isLoading}
-              onSubmitEditing={sendMessage}
-            />
+
+            {/* text input pill */}
+            <View style={styles.inputPill}>
+              <TextInput
+                value={input}
+                onChangeText={setInput}
+                onFocus={() => setShowEmojiPicker(false)}
+                placeholder="Message..."
+                placeholderTextColor="rgba(255,255,255,0.35)"
+                style={styles.input}
+                multiline
+                maxLength={500}
+                editable={!isLoading && !isRecording}
+              />
+              <View style={styles.pillActions}>
+                <TouchableOpacity onPress={() => { Keyboard.dismiss(); setShowImageSheet(true); }} disabled={isLoading} style={styles.pillIcon}>
+                  <Ionicons name="attach-outline" size={22} color={isLoading ? "#444" : "rgba(255,255,255,0.5)"} />
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* right action: send OR mic */}
             {input.trim() ? (
               <TouchableOpacity
-                style={styles.sendTextButton}
+                style={styles.sendBtn}
                 onPress={sendMessage}
                 disabled={isLoading}
               >
-                <Text style={styles.sendText}>Send</Text>
+                <Ionicons name="send" size={19} color="#fff" />
               </TouchableOpacity>
-            ) : (
-              <View style={styles.inputActions}>
-                <TouchableOpacity
-                  style={styles.inputIcon}
-                  onPress={pickImage}
-                  disabled={isLoading}
-                >
-                  <Ionicons
-                    name="image-outline"
-                    size={24}
-                    color={isLoading ? "#666" : "#fff"}
-                  />
-                </TouchableOpacity>
+            ) : isTranscribing ? (
+              <View style={styles.sendBtn}>
+                <ActivityIndicator size="small" color="#fff" />
               </View>
+            ) : (
+              <Pressable
+                style={[styles.sendBtn, isRecording && styles.sendBtnRecording]}
+                onPressIn={handleVoicePressIn}
+                onPressOut={handleVoicePressOut}
+                disabled={isLoading}
+              >
+                <Ionicons name={isRecording ? "radio-button-on" : "mic"} size={21} color="#fff" />
+              </Pressable>
             )}
           </View>
         </View>
-      </KeyboardAvoidingView>
+      </Animated.View>
+
+      {/* emoji picker sheet */}
+      <EmojiPicker
+        visible={showEmojiPicker}
+        onClose={() => setShowEmojiPicker(false)}
+        onSelect={(emoji) => setInput((prev) => prev + emoji)}
+      />
 
       {/* settings screen overlay */}
       {showSettings && (
@@ -701,33 +979,75 @@ export const ChatScreen = () => {
         visible={showRefundSheet}
         onClose={() => setShowRefundSheet(false)}
       />
-    </View>
+
+      {/* 3-dot dropdown menu */}
+      <HeaderMenu
+        visible={showMenu}
+        isMuted={isMuted}
+        menuTop={menuTop}
+        onClose={() => setShowMenu(false)}
+        onToggleMute={() => setIsMuted((v) => !v)}
+        onSearch={() => setShowSearch(true)}
+        onTheme={() => setShowThemePicker(true)}
+        onSettings={() => setShowSettings(true)}
+      />
+
+      {/* chat theme picker */}
+      <ThemePicker
+        visible={showThemePicker}
+        currentThemeId={chatTheme.id}
+        onSelect={(t) => setChatTheme(t)}
+        onClose={() => setShowThemePicker(false)}
+      />
+
+      {/* luna profile editor */}
+      <LunaProfileModal
+        visible={showProfileModal}
+        profile={lunaProfile}
+        onSave={(p) => setLunaProfile(p)}
+        onClose={() => setShowProfileModal(false)}
+        onPickFromGallery={pickLunaAvatarFromGallery}
+      />
+
+      {/* image source picker sheet */}
+      <ImageSourceSheet
+        visible={showImageSheet}
+        onCamera={takePhoto}
+        onGallery={pickImage}
+        onClose={() => setShowImageSheet(false)}
+      />
+
+      {/* global custom alert — replaces system Alert.alert */}
+      <AlertProvider />
+    </ThemeBackground>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#000",
   },
   keyboardAvoid: {
     flex: 1,
   },
-  // header - instagram style
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: "#000",
+    backgroundColor: "rgba(0,0,0,0.6)",
     borderBottomWidth: 0.5,
-    borderBottomColor: "rgba(255, 255, 255, 0.15)",
+    borderBottomColor: "rgba(255, 255, 255, 0.1)",
   },
   headerLeft: {
+    flex: 1,
+  },
+  headerLeftInner: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
+    paddingVertical: 4,
   },
   headerAvatar: {
     width: 36,
@@ -744,6 +1064,18 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "rgba(255, 255, 255, 0.6)",
     marginTop: 1,
+  },
+  typingSubtitle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    marginTop: 3,
+  },
+  typingDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "rgba(255,255,255,0.6)",
   },
   headerRight: {
     flexDirection: "row",
@@ -822,6 +1154,15 @@ const styles = StyleSheet.create({
   assistantMessageText: {
     color: "#fff",
   },
+  searchHighlight: {
+    backgroundColor: "#FFD60A",
+    color: "#000",
+    borderRadius: 3,
+  },
+  searchHighlightActive: {
+    backgroundColor: "#FF9500",
+    color: "#000",
+  },
   // image in message
   imageBubble: {
     padding: 4,
@@ -856,51 +1197,83 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   dot: {
-    width: 7,
-    height: 7,
+    width: 8,
+    height: 8,
     borderRadius: 4,
-    backgroundColor: "#8E8E93",
+    backgroundColor: "#aaaaaa",
   },
-  dot1: {
-    opacity: 1,
-  },
-  dot2: {
-    opacity: 0.7,
-  },
-  dot3: {
-    opacity: 0.4,
-  },
-  // input area - instagram style
+  // input area
   inputContainer: {
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingTop: 8,
-    backgroundColor: "#000",
+    backgroundColor: "rgba(0,0,0,0.6)",
     borderTopWidth: 0.5,
-    borderTopColor: "rgba(255, 255, 255, 0.15)",
+    borderTopColor: "rgba(255, 255, 255, 0.1)",
   },
+  inputRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 8,
+  },
+  inputIconBtn: {
+    width: 40,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  emojiIcon: {
+    fontSize: 26,
+  },
+  inputPill: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    backgroundColor: "#1c1c1e",
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    paddingLeft: 14,
+    paddingRight: 4,
+    paddingVertical: 4,
+    minHeight: 44,
+  },
+  input: {
+    flex: 1,
+    color: "#fff",
+    fontSize: 16,
+    paddingVertical: 8,
+    maxHeight: 100,
+    minHeight: 36,
+  },
+  pillActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingBottom: 2,
+  },
+  pillIcon: {
+    padding: 6,
+  },
+  sendBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#7C3AED",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sendBtnRecording: {
+    backgroundColor: "#e11d48",
+  },
+  // kept for any remaining references
   inputWrapper: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#262626",
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.15)",
-    paddingHorizontal: 4,
   },
   inputIcon: {
     padding: 10,
   },
   inputActions: {
     flexDirection: "row",
-  },
-  input: {
-    flex: 1,
-    color: "#fff",
-    fontSize: 16,
-    paddingVertical: 10,
-    paddingHorizontal: 4,
-    maxHeight: 100,
-    minHeight: 44,
   },
   sendTextButton: {
     paddingHorizontal: 16,

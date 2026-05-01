@@ -10,16 +10,15 @@ import {
   TextInput,
   Linking,
   StatusBar,
-  Alert,
   Image
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons'
 import { getUserProfile, updateUserProfile, grantLifetimeAccess, hasLifetimeAccess } from '../services/profile'
-import { submitTwitterShare } from '../services/api'
 import { TELEGRAM_SUPPORT_URL, PAYMENT_CONFIG, ORIGINAL_LIFETIME_PRICE_SOL } from '../constants/config'
 import { UserProfile } from '../types'
 import { UpgradeBottomSheet } from '../components/UpgradeBottomSheet'
+import { showAlert } from '../components/AppAlert'
 
 interface SettingsScreenProps {
   onClose: () => void
@@ -43,9 +42,6 @@ export const SettingsScreen = ({ onClose, onShowRefundPolicy, onUpgradeToLifetim
   const [flirtLevel, setFlirtLevel] = useState(3)
   const [relationshipStatus, setRelationshipStatus] = useState('')
   const [boundaries, setBoundaries] = useState('')
-  const [twitterUrl, setTwitterUrl] = useState('')
-  const [showTwitterInput, setShowTwitterInput] = useState(false)
-  const [isSubmittingTwitter, setIsSubmittingTwitter] = useState(false)
   const [showUpgradeSheet, setShowUpgradeSheet] = useState(false)
   const [isUpgrading, setIsUpgrading] = useState(false)
 
@@ -86,7 +82,7 @@ export const SettingsScreen = ({ onClose, onShowRefundPolicy, onUpgradeToLifetim
     // reload profile
     const p = getUserProfile()
     setProfile(p)
-    Alert.alert('Saved', 'Your profile has been updated!')
+    showAlert({ title: 'Saved', message: 'Your profile has been updated!', icon: 'success' })
   }
 
   const handleCancel = () => {
@@ -105,38 +101,6 @@ export const SettingsScreen = ({ onClose, onShowRefundPolicy, onUpgradeToLifetim
     Linking.openURL(TELEGRAM_SUPPORT_URL)
   }
 
-  const handleTwitterShare = async () => {
-    const tweetText = encodeURIComponent("I've been chatting with Luna AI - my virtual girlfriend! Try it out!")
-    const url = `https://twitter.com/intent/tweet?text=${tweetText}`
-    await Linking.openURL(url)
-    setShowTwitterInput(true)
-  }
-
-  const handleSubmitTwitterUrl = async () => {
-    if (!twitterUrl.trim()) {
-      Alert.alert('Error', 'Please paste your tweet URL')
-      return
-    }
-
-    setIsSubmittingTwitter(true)
-    try {
-      const success = await submitTwitterShare(twitterUrl.trim())
-      if (success) {
-        await grantLifetimeAccess()
-        Alert.alert('Success!', 'You now have lifetime access to Luna!')
-        setShowTwitterInput(false)
-        setTwitterUrl('')
-        const p = getUserProfile()
-        setProfile(p)
-      } else {
-        Alert.alert('Invalid URL', 'Please make sure you paste a valid Twitter/X post URL')
-      }
-    } catch {
-      Alert.alert('Error', 'Something went wrong. Please try again.')
-    }
-    setIsSubmittingTwitter(false)
-  }
-
   const handleUpgrade = async () => {
     if (!onUpgradeToLifetime) return
     setIsUpgrading(true)
@@ -146,10 +110,10 @@ export const SettingsScreen = ({ onClose, onShowRefundPolicy, onUpgradeToLifetim
         setShowUpgradeSheet(false)
         const p = getUserProfile()
         setProfile(p)
-        Alert.alert('Welcome!', 'You now have lifetime access to Luna!')
+        showAlert({ title: 'Welcome!', message: 'You now have lifetime access to Luna!', icon: 'success' })
       }
     } catch {
-      Alert.alert('Error', 'Payment failed. Please try again.')
+      showAlert({ title: 'Payment Failed', message: 'Something went wrong. Please try again.', icon: 'error' })
     }
     setIsUpgrading(false)
   }
@@ -157,20 +121,15 @@ export const SettingsScreen = ({ onClose, onShowRefundPolicy, onUpgradeToLifetim
   const flirtLabels = ['Friendly', 'Playful', 'Balanced', 'Flirty', 'Spicy']
 
   const handleLogout = () => {
-    Alert.alert(
-      'Log Out',
-      'Are you sure you want to log out? Your local chat history will be cleared.',
-      [
+    showAlert({
+      title: 'Log Out',
+      message: 'Are you sure you want to log out? Your local chat history will be cleared.',
+      icon: 'warning',
+      buttons: [
         { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Log Out',
-          style: 'destructive',
-          onPress: () => {
-            if (onLogout) onLogout()
-          }
-        }
-      ]
-    )
+        { text: 'Log Out', style: 'destructive', onPress: () => { if (onLogout) onLogout() } },
+      ],
+    })
   }
 
   return (
@@ -401,47 +360,6 @@ export const SettingsScreen = ({ onClose, onShowRefundPolicy, onUpgradeToLifetim
           </View>
         )}
 
-        {/* twitter share card */}
-        {!hasLifetimeAccess() && (
-          <View style={styles.section}>
-            <View style={styles.promoCard}>
-              <View style={styles.promoIcon}>
-                <Ionicons name="gift-outline" size={28} color="#ff69b4" />
-              </View>
-              <Text style={styles.promoTitle}>Get Free Lifetime Access</Text>
-              <Text style={styles.promoDesc}>
-                Share Luna on Twitter and unlock unlimited access forever!
-              </Text>
-              {!showTwitterInput ? (
-                <TouchableOpacity style={styles.promoButton} onPress={handleTwitterShare}>
-                  <Ionicons name="logo-twitter" size={18} color="#fff" />
-                  <Text style={styles.promoButtonText}>Share on Twitter</Text>
-                </TouchableOpacity>
-              ) : (
-                <View style={styles.twitterInputBox}>
-                  <Text style={styles.twitterHint}>Paste your tweet URL:</Text>
-                  <TextInput
-                    style={styles.twitterInput}
-                    value={twitterUrl}
-                    onChangeText={setTwitterUrl}
-                    placeholder="https://twitter.com/..."
-                    placeholderTextColor="#666"
-                    autoCapitalize="none"
-                  />
-                  <TouchableOpacity
-                    style={[styles.claimButton, isSubmittingTwitter && styles.buttonDisabled]}
-                    onPress={handleSubmitTwitterUrl}
-                    disabled={isSubmittingTwitter}
-                  >
-                    <Text style={styles.claimButtonText}>
-                      {isSubmittingTwitter ? 'Verifying...' : 'Claim Lifetime Access'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              )}
-            </View>
-          </View>
-        )}
 
         {/* support section */}
         <View style={styles.section}>
@@ -792,37 +710,6 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 15,
     fontWeight: '600'
-  },
-  twitterInputBox: {
-    width: '100%'
-  },
-  twitterHint: {
-    fontSize: 13,
-    color: '#8E8E93',
-    marginBottom: 8
-  },
-  twitterInput: {
-    backgroundColor: '#2C2C2E',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    color: '#fff',
-    fontSize: 15,
-    marginBottom: 12
-  },
-  claimButton: {
-    backgroundColor: '#ff69b4',
-    paddingVertical: 14,
-    borderRadius: 10,
-    alignItems: 'center'
-  },
-  claimButtonText: {
-    color: '#fff',
-    fontSize: 15,
-    fontWeight: '600'
-  },
-  buttonDisabled: {
-    opacity: 0.5
   },
   // menu rows
   menuRow: {
