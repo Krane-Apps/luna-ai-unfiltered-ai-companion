@@ -98,17 +98,21 @@ export const HeaderMenu = ({
 
         <View style={styles.divider} />
 
-        {/* chat theme */}
-        <TouchableOpacity
-          style={styles.row}
-          onPress={() => { onClose(); setTimeout(onTheme, 160); }}
-          activeOpacity={0.7}
-        >
-          <Ionicons name="color-palette-outline" size={19} color="#fff" />
-          <Text style={styles.label}>Chat theme</Text>
-        </TouchableOpacity>
-
-        <View style={styles.divider} />
+        {/* chat theme — hidden until v2. The handler + ThemePicker plumbing
+            are still wired up in ChatScreen so re-enabling is a one-block flip. */}
+        {false && (
+          <>
+            <TouchableOpacity
+              style={styles.row}
+              onPress={() => { onClose(); setTimeout(onTheme, 160); }}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="color-palette-outline" size={19} color="#fff" />
+              <Text style={styles.label}>Chat theme</Text>
+            </TouchableOpacity>
+            <View style={styles.divider} />
+          </>
+        )}
 
         {/* settings */}
         <TouchableOpacity

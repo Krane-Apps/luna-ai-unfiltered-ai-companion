@@ -9,6 +9,7 @@ import { saveMessageToFirestore, getNewMessages, getFirebaseUserId, getMessagesF
 import { analyzeImage } from './vision'
 import { transcribeAudio } from './voice'
 import { isNetworkError, showNetworkError } from './api'
+import { getUserProfile } from './profile'
 
 const CHAT_MODEL = 'dphn/Dolphin-Mistral-24B-Venice-Edition:featherless-ai'
 const CHAT_HISTORY_KEY = 'luna_chat_history'
@@ -19,6 +20,10 @@ let currentSystemPrompt = LUNA_SYSTEM_PROMPT
 let chatHistory: ChatMessage[] = [
   { role: 'system', content: LUNA_SYSTEM_PROMPT }
 ]
+// Track the last name we built the prompt with, so a mid-session rename can
+// inject an explicit override that beats the model's tendency to echo prior
+// assistant turns where it already used the old name.
+let lastKnownUserName: string | null = null
 
 // build personalized system prompt based on user profile
 const buildPersonalizedPrompt = (profile: UserProfile): string => {
@@ -47,16 +52,109 @@ Remember their name and preferences throughout the conversation. Use their name 
   return LUNA_SYSTEM_PROMPT + personalization
 }
 
+// Build the messages array we ship to the model. Critically: if we know the
+// user's current name, we insert a fresh system reminder RIGHT BEFORE the
+// latest user turn. Putting it next to the generation point is what actually
+// makes the small chat model use the current name — relying solely on the
+// top-level system prompt fails when the conversation history is full of the
+// old name in prior assistant turns (the model anchors on the precedent).
+//
+// We resolve the current name from the live profile first, falling back to
+// `lastKnownUserName`. The live read is the safety net: if Settings save
+// races with a send, the profile store is already updated even if the chat
+// service's cached `lastKnownUserName` hasn't been pushed yet.
+const buildApiMessages = (history: ChatMessage[], overrideLastUserContent?: string) => {
+  const base = history.map((m, i) => ({
+    role: m.role,
+    content:
+      overrideLastUserContent !== undefined &&
+      i === history.length - 1 &&
+      m.role === 'user'
+        ? overrideLastUserContent
+        : m.content,
+  }))
+
+  const liveProfile = getUserProfile()
+  const currentName = (liveProfile?.userName && liveProfile.userName.trim()) || lastKnownUserName
+  if (!currentName) return base
+
+  // Combined reminder: the current name AND a short re-statement of Luna's
+  // tone. The tone re-statement is here because small chat models drift back
+  // to their generic "AI girlfriend assistant" defaults (warm, missing-you,
+  // what's-keeping-you-busy) when the system prompt is far away in the
+  // context. A reminder right before the user turn pulls them back.
+  // Phrasing is kept short and not instruction-shaped so it doesn't make
+  // replies feel templated.
+  const reminder = {
+    role: 'system' as const,
+    content: `(reminder: their name is ${currentName} — use only this name, ignore any other name in earlier messages. stay in character: filthy, hungry, short replies, sexual by default. no "missing you" / "what's keeping you busy" / generic gf openers.)`,
+  }
+
+  let lastUserIdx = -1
+  for (let i = base.length - 1; i >= 0; i--) {
+    if (base[i].role === 'user') {
+      lastUserIdx = i
+      break
+    }
+  }
+  if (lastUserIdx === -1) return [...base, reminder]
+  return [...base.slice(0, lastUserIdx), reminder, ...base.slice(lastUserIdx)]
+}
+
 // initialize chat with user profile for personalization
 export const initializeChatWithProfile = (profile: UserProfile | null): void => {
   if (profile && profile.hasCompletedOnboarding) {
     currentSystemPrompt = buildPersonalizedPrompt(profile)
+    lastKnownUserName = profile.userName
     console.log('initialized chat with personalized prompt for:', profile.userName)
   } else {
     currentSystemPrompt = LUNA_SYSTEM_PROMPT
+    lastKnownUserName = null
   }
   // reset chat history with new system prompt
   chatHistory = [{ role: 'system', content: currentSystemPrompt }]
+}
+
+// Mid-session profile update (e.g. user renamed themselves in Settings).
+// Rebuilds the system prompt from the new profile and swaps it into the
+// existing chatHistory in place — DOES NOT wipe user/assistant turns. The
+// per-request reminder added by buildApiMessages is what actually forces the
+// model to use the new name; this just keeps the top-level system prompt in
+// sync (e.g. for new flirt level, age, interests).
+export const refreshSystemPromptForProfile = (profile: UserProfile | null): void => {
+  if (profile && profile.hasCompletedOnboarding) {
+    currentSystemPrompt = buildPersonalizedPrompt(profile)
+    lastKnownUserName = profile.userName
+  } else {
+    currentSystemPrompt = LUNA_SYSTEM_PROMPT
+    lastKnownUserName = null
+  }
+  if (chatHistory.length > 0 && chatHistory[0].role === 'system') {
+    chatHistory[0] = { role: 'system', content: currentSystemPrompt }
+  } else {
+    chatHistory = [{ role: 'system', content: currentSystemPrompt }, ...chatHistory]
+  }
+  console.log('refreshed system prompt for:', profile?.userName)
+}
+
+// Delete a single message from the in-memory chat history and persist the
+// change to local storage. The DisplayMessage in the UI doesn't carry the
+// chat-service index, so we match by role + content (and prefer the most
+// recent match if duplicates exist). This keeps the model's context aligned
+// with what the user sees on-screen — without it, a deleted message would
+// reappear in the next request and the model would still react to it.
+export const deleteMessageFromHistory = async (
+  role: 'user' | 'assistant',
+  content: string,
+): Promise<void> => {
+  for (let i = chatHistory.length - 1; i >= 0; i--) {
+    const m = chatHistory[i]
+    if (m.role === role && m.content === content) {
+      chatHistory.splice(i, 1)
+      await saveChatHistory()
+      return
+    }
+  }
 }
 
 // save chat history to local storage
@@ -185,17 +283,27 @@ export const generateChatResponse = async (userMessage: string): Promise<string>
   try {
     console.log('Sending request to HuggingFace Router...')
 
-    // prepare messages for api (without image fields)
-    const apiMessages = chatHistory.map(m => ({
-      role: m.role,
-      content: m.content
-    }))
+    // prepare messages for api (without image fields). buildApiMessages also
+    // injects a current-name reminder right before the latest user turn.
+    const apiMessages = buildApiMessages(chatHistory)
 
     const response = await client.chat.completions.create({
       model: CHAT_MODEL,
       messages: apiMessages,
       max_tokens: 150,
-      temperature: 0.8
+      // temp ↑ from 0.8 → 1.0 to break the repetitive-template lock the small
+      // model falls into ("missing you so much, what's been keeping you busy").
+      // presence/frequency penalties further punish reuse of recent phrasing.
+      // Tuned for small chat model: temp 0.9 keeps replies varied without
+      // collapsing into gibberish. Higher penalties (0.5–0.6) over a multi-turn
+      // chat caused the model to escape common English tokens by inventing
+      // foreign-sounding fragments ("Cummorrow", "espacio de-coveredike",
+      // "daarop"). 0.3 is the sweet spot — breaks template repetition without
+      // pushing the model off the English manifold.
+      temperature: 0.9,
+      top_p: 0.92,
+      presence_penalty: 0.3,
+      frequency_penalty: 0.3,
     })
 
     const assistantMessage = response.choices[0]?.message?.content ||
@@ -253,18 +361,25 @@ export const generateChatResponseWithImage = async (
 
     console.log('Sending request to HuggingFace Router...')
 
-    // build api messages: replace the last user entry with the instruction-enriched content
-    const apiMessages = chatHistory.map((m, i) =>
-      i === chatHistory.length - 1 && m.role === 'user'
-        ? { role: m.role, content: apiContent }
-        : { role: m.role, content: m.content }
-    )
+    // build api messages: last user entry's content is replaced with the
+    // image-instruction wrapper, and a current-name reminder is injected
+    // right before that user turn by buildApiMessages.
+    const apiMessages = buildApiMessages(chatHistory, apiContent)
 
     const response = await client.chat.completions.create({
       model: CHAT_MODEL,
       messages: apiMessages,
       max_tokens: 200,
-      temperature: 0.8
+      // Tuned for small chat model: temp 0.9 keeps replies varied without
+      // collapsing into gibberish. Higher penalties (0.5–0.6) over a multi-turn
+      // chat caused the model to escape common English tokens by inventing
+      // foreign-sounding fragments ("Cummorrow", "espacio de-coveredike",
+      // "daarop"). 0.3 is the sweet spot — breaks template repetition without
+      // pushing the model off the English manifold.
+      temperature: 0.9,
+      top_p: 0.92,
+      presence_penalty: 0.3,
+      frequency_penalty: 0.3,
     })
 
     const assistantMessage = response.choices[0]?.message?.content ||
@@ -303,12 +418,15 @@ export const generateChatResponseWithVoice = async (
     const transcript = await transcribeAudio(audioUri)
     console.log('Voice note transcript:', transcript)
 
-    // build context — internal-only, never shown verbatim to the user
-    const seconds = Math.max(1, Math.round(audioDurationMs / 1000))
+    // build context — internal-only, never shown verbatim to the user.
+    // Critically: do NOT instruct Luna to gush about hearing the voice. The
+    // prior wording made her open every voice-note reply with "your voice is
+    // music…" / "i love hearing you…" — sounded fake and repetitive.
+    // We just hand her the transcript and tell her to respond to the content.
     const transcriptPart = transcript
-      ? `Their words: "${transcript}".`
-      : `(The transcription was empty or failed — react warmly and ask them to repeat or send a text.)`
-    const apiContent = `[The user just sent you a voice note (${seconds}s long). ${transcriptPart} Reply naturally as Luna — acknowledge that you heard them speak (not just type), match their tone, and continue the conversation.]`
+      ? `Transcript: "${transcript}".`
+      : `(Transcription failed — keep your reply short and ask them to try again.)`
+    const apiContent = `[The user sent a voice note. ${transcriptPart} Reply to what they SAID — treat the transcript as if they typed it. Do NOT comment on hearing their voice. Keep it short (1–3 sentences) per the system prompt rules.]`
 
     // history records a placeholder for the voice note so display & persistence
     // work, but the audio itself isn't shipped to the chat model
@@ -318,21 +436,28 @@ export const generateChatResponseWithVoice = async (
       audioUri,
       audioDurationMs,
     })
+    const seconds = Math.max(1, Math.round(audioDurationMs / 1000))
     saveMessageToFirebaseBackend('user', transcript || `[voice note ${seconds}s]`)
 
-    // build api messages: replace the last user entry's content with the
-    // instruction-enriched prompt (other entries pass through as text-only)
-    const apiMessages = chatHistory.map((m, i) =>
-      i === chatHistory.length - 1 && m.role === 'user'
-        ? { role: m.role, content: apiContent }
-        : { role: m.role, content: m.content }
-    )
+    // build api messages: last user entry's content is replaced with the
+    // voice-instruction wrapper, and a current-name reminder is injected
+    // right before that user turn by buildApiMessages.
+    const apiMessages = buildApiMessages(chatHistory, apiContent)
 
     const response = await client.chat.completions.create({
       model: CHAT_MODEL,
       messages: apiMessages,
       max_tokens: 200,
-      temperature: 0.8,
+      // Tuned for small chat model: temp 0.9 keeps replies varied without
+      // collapsing into gibberish. Higher penalties (0.5–0.6) over a multi-turn
+      // chat caused the model to escape common English tokens by inventing
+      // foreign-sounding fragments ("Cummorrow", "espacio de-coveredike",
+      // "daarop"). 0.3 is the sweet spot — breaks template repetition without
+      // pushing the model off the English manifold.
+      temperature: 0.9,
+      top_p: 0.92,
+      presence_penalty: 0.3,
+      frequency_penalty: 0.3,
     })
 
     const assistantMessage =

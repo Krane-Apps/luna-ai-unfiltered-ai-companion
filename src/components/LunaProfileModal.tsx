@@ -139,85 +139,90 @@ export const LunaProfileModal = ({
             </TouchableOpacity>
           </View>
 
-          <Text style={styles.avatarHint}>Tap avatar or choose below</Text>
+          <Text style={styles.avatarHint}>Tap the camera to change avatar</Text>
 
-          {/* preset chips */}
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.chipsRow}
-            keyboardShouldPersistTaps="handled"
-          >
-            {/* default chip */}
-            <TouchableOpacity
-              activeOpacity={0.75}
-              style={styles.chipWrap}
-              onPress={() => setDraft(d => ({ ...d, presetIndex: null, avatarUri: null }))}
+          {/* preset chips row hidden until v2 — gallery flow above (camera badge
+              on the avatar) is the only path to change avatar for now. The chip
+              UI + handlers below are kept inside a `false &&` gate so v2 can
+              flip it back on without re-implementing. */}
+          {false && (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.chipsRow}
+              keyboardShouldPersistTaps="handled"
             >
-              <View style={[
-                styles.chip,
-                draft.presetIndex === null && draft.avatarUri === null && styles.chipActive,
-              ]}>
-                <Image source={require("../../assets/icon.png")} style={styles.chipImg} />
-                {draft.presetIndex === null && draft.avatarUri === null && (
-                  <View style={styles.chipCheck}>
-                    <Ionicons name="checkmark" size={10} color="#fff" />
-                  </View>
-                )}
-              </View>
-              <Text style={styles.chipLabel}>Default</Text>
-            </TouchableOpacity>
-
-            {/* gallery chip */}
-            <TouchableOpacity
-              activeOpacity={0.75}
-              style={styles.chipWrap}
-              onPress={() => onPickFromGallery((uri) => {
-                setDraft(d => ({ ...d, avatarUri: uri, presetIndex: null }));
-              })}
-            >
-              <View style={[
-                styles.chip,
-                draft.avatarUri !== null && styles.chipActive,
-              ]}>
-                {draft.avatarUri ? (
-                  <Image source={{ uri: draft.avatarUri }} style={styles.chipImg} />
-                ) : (
-                  <View style={[styles.chipEmoji, { backgroundColor: "#2c2c2e" }]}>
-                    <Ionicons name="images-outline" size={20} color="rgba(255,255,255,0.7)" />
-                  </View>
-                )}
-                {draft.avatarUri && (
-                  <View style={styles.chipCheck}>
-                    <Ionicons name="checkmark" size={10} color="#fff" />
-                  </View>
-                )}
-              </View>
-              <Text style={styles.chipLabel}>Gallery</Text>
-            </TouchableOpacity>
-
-            {/* preset emoji chips */}
-            {PRESET_AVATARS.map((p, i) => (
+              {/* default chip */}
               <TouchableOpacity
-                key={i}
                 activeOpacity={0.75}
                 style={styles.chipWrap}
-                onPress={() => setDraft(d => ({ ...d, presetIndex: i, avatarUri: null }))}
+                onPress={() => setDraft(d => ({ ...d, presetIndex: null, avatarUri: null }))}
               >
-                <View style={[styles.chip, draft.presetIndex === i && styles.chipActive]}>
-                  <View style={[styles.chipEmoji, { backgroundColor: p.bg }]}>
-                    <Text style={styles.chipEmojiText}>{p.emoji}</Text>
-                  </View>
-                  {draft.presetIndex === i && (
+                <View style={[
+                  styles.chip,
+                  draft.presetIndex === null && draft.avatarUri === null && styles.chipActive,
+                ]}>
+                  <Image source={require("../../assets/icon.png")} style={styles.chipImg} />
+                  {draft.presetIndex === null && draft.avatarUri === null && (
                     <View style={styles.chipCheck}>
                       <Ionicons name="checkmark" size={10} color="#fff" />
                     </View>
                   )}
                 </View>
-                <Text style={styles.chipLabel}>{p.label}</Text>
+                <Text style={styles.chipLabel}>Default</Text>
               </TouchableOpacity>
-            ))}
-          </ScrollView>
+
+              {/* gallery chip */}
+              <TouchableOpacity
+                activeOpacity={0.75}
+                style={styles.chipWrap}
+                onPress={() => onPickFromGallery((uri) => {
+                  setDraft(d => ({ ...d, avatarUri: uri, presetIndex: null }));
+                })}
+              >
+                <View style={[
+                  styles.chip,
+                  draft.avatarUri !== null && styles.chipActive,
+                ]}>
+                  {draft.avatarUri ? (
+                    <Image source={{ uri: draft.avatarUri as string }} style={styles.chipImg} />
+                  ) : (
+                    <View style={[styles.chipEmoji, { backgroundColor: "#2c2c2e" }]}>
+                      <Ionicons name="images-outline" size={20} color="rgba(255,255,255,0.7)" />
+                    </View>
+                  )}
+                  {draft.avatarUri && (
+                    <View style={styles.chipCheck}>
+                      <Ionicons name="checkmark" size={10} color="#fff" />
+                    </View>
+                  )}
+                </View>
+                <Text style={styles.chipLabel}>Gallery</Text>
+              </TouchableOpacity>
+
+              {/* preset emoji chips */}
+              {PRESET_AVATARS.map((p, i) => (
+                <TouchableOpacity
+                  key={i}
+                  activeOpacity={0.75}
+                  style={styles.chipWrap}
+                  onPress={() => setDraft(d => ({ ...d, presetIndex: i, avatarUri: null }))}
+                >
+                  <View style={[styles.chip, draft.presetIndex === i && styles.chipActive]}>
+                    <View style={[styles.chipEmoji, { backgroundColor: p.bg }]}>
+                      <Text style={styles.chipEmojiText}>{p.emoji}</Text>
+                    </View>
+                    {draft.presetIndex === i && (
+                      <View style={styles.chipCheck}>
+                        <Ionicons name="checkmark" size={10} color="#fff" />
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.chipLabel}>{p.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          )}
 
           {/* divider */}
           <View style={styles.divider} />
@@ -420,7 +425,10 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     textTransform: "uppercase",
     letterSpacing: 1,
-    marginBottom: 10,
+    // matches the divider's 24px above the label so the spacing reads as
+    // symmetrical instead of label-stuck-to-input
+    marginBottom: 24,
+    textAlign: "center",
   },
   inputWrap: {
     flexDirection: "row",
@@ -441,6 +449,7 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 16,
     padding: 0,
+    textAlign: "center",
   },
   charCount: {
     color: "rgba(255,255,255,0.25)",

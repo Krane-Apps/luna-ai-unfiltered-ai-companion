@@ -17,6 +17,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons'
 import { getUserProfile, updateUserProfile, grantLifetimeAccess, hasLifetimeAccess } from '../services/profile'
+import { refreshSystemPromptForProfile } from '../services/chat'
 import { TELEGRAM_SUPPORT_URL, PAYMENT_CONFIG, ORIGINAL_LIFETIME_PRICE_SOL } from '../constants/config'
 import { UserProfile } from '../types'
 import { UpgradeBottomSheet } from '../components/UpgradeBottomSheet'
@@ -321,6 +322,11 @@ export const SettingsScreen = ({ onClose, onShowRefundPolicy, onUpgradeToLifetim
     // reload profile
     const p = getUserProfile()
     setProfile(p)
+    // Push the new profile into the chat service's in-memory system prompt so
+    // Luna's next reply uses the updated name/age/interests/etc. Without this
+    // she'll keep addressing the user by the old onboarding name even though
+    // storage shows the new one.
+    refreshSystemPromptForProfile(p)
     showAlert({ title: 'Saved', message: 'Your profile has been updated!', icon: 'success' })
   }
 
